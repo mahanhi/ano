@@ -172,7 +172,7 @@ func (s *Service) relay(prompt bool) error {
 	if err := os.WriteFile(script, []byte(dnsRelayScript), 0o755); err != nil {
 		return err
 	}
-	shell := fmt.Sprintf("nohup /usr/bin/python3 %s %d %s %s >> %s 2>&1 &", quote(script), dnsRelay, quote(stop), quote(ready), quote(logPath))
+	shell := background(fmt.Sprintf("/usr/bin/python3 %s %d %s %s", quote(script), dnsRelay, quote(stop), quote(ready)), logPath)
 	var cmd *exec.Cmd
 	if prompt {
 		cmd = exec.Command("osascript", "-e", fmt.Sprintf(`do shell script "%s" with administrator privileges`, escapeApple(shell)))
@@ -191,6 +191,12 @@ func (s *Service) relay(prompt bool) error {
 
 func quote(path string) string {
 	return "'" + path + "'"
+}
+
+// background starts a root helper without nohup. macOS nohup fails with
+// "can't detach from console" when the caller has no terminal.
+func background(command, logPath string) string {
+	return fmt.Sprintf("trap '' HUP; %s >> %s 2>&1 </dev/null &", command, quote(logPath))
 }
 
 func escapeApple(shell string) string {

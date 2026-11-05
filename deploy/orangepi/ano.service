@@ -1,0 +1,13 @@
+[Unit]
+Description=Ano gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/ano
+Environment=HBAR_DATA=/var/lib/ano
+ExecStart=/opt/ano/hbar
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

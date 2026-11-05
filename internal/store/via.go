@@ -15,6 +15,7 @@ type ViaNote struct {
 	Host     string
 	Protocol string
 	Category string
+	Port     int `json:"port"`
 	Bytes    int
 	Refused  bool
 }
@@ -88,6 +89,9 @@ func (s *Store) NoteVia(note ViaNote) error {
 	if note.Protocol == "" {
 		note.Protocol = "HTTPS"
 	}
+	if note.Port < 0 || note.Port > 65535 {
+		note.Port = 0
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var deviceID, deviceName string
@@ -112,8 +116,8 @@ func (s *Store) NoteVia(note ViaNote) error {
 	var observations, bytesOut, afterBytes, afterLookups int
 	err = s.db.QueryRow(`SELECT observations, bytes_out, after_bytes, after_lookups FROM patterns WHERE device_id = ? AND destination = ?`, deviceID, note.Host).Scan(&observations, &bytesOut, &afterBytes, &afterLookups)
 	if err == sql.ErrNoRows {
-		if _, err = s.db.Exec(`INSERT INTO patterns (id, device_id, destination, category, protocol, evidence, observations, bytes_out, every_seconds, per_lookup_bytes) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0)`,
-			patternID, deviceID, note.Host, note.Category, note.Protocol, evidence); err != nil {
+		if _, err = s.db.Exec(`INSERT INTO patterns (id, device_id, destination, category, protocol, port, evidence, observations, bytes_out, every_seconds, per_lookup_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)`,
+			patternID, deviceID, note.Host, note.Category, note.Protocol, note.Port, evidence); err != nil {
 			return err
 		}
 		if _, err = s.db.Exec(`INSERT INTO rules (id, pattern_id, action, status, source, sentence, consequence, suggestion, activity) VALUES (?, ?, ?, 'suggested', ?, ?, ?, '', ?)`,
@@ -133,8 +137,8 @@ func (s *Store) NoteVia(note ViaNote) error {
 	} else {
 		bytesOut += note.Bytes
 	}
-	if _, err = s.db.Exec(`UPDATE patterns SET observations = ?, bytes_out = ?, after_bytes = ?, after_lookups = ?, protocol = ? WHERE id = ?`,
-		observations, bytesOut, afterBytes, afterLookups, note.Protocol, patternID); err != nil {
+	if _, err = s.db.Exec(`UPDATE patterns SET observations = ?, bytes_out = ?, after_bytes = ?, after_lookups = ?, protocol = ?, port = CASE WHEN ? > 0 THEN ? ELSE port END WHERE id = ?`,
+		observations, bytesOut, afterBytes, afterLookups, note.Protocol, note.Port, note.Port, patternID); err != nil {
 		return err
 	}
 	now := time.Now().UTC().Truncate(time.Second)

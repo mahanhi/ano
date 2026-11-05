@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,82 +30,7 @@ type natlook struct {
 // RunSteer takes the Wi-Fi path for the Fire TVs listed in the config file.
 // It restores the router when the stop file appears or Ano stops answering.
 func RunSteer(path string) error {
-	cfg, err := readSteer(path)
-	if err != nil {
-		return err
-	}
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return err
-	}
-	defer ln.Close()
-	bpf, err := openBPF(cfg.Iface)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(bpf)
-	fwd, redir, err := setForwarding()
-	if err != nil {
-		return err
-	}
-	token, err := enablePF(cfg)
-	if err != nil {
-		restoreForwarding(fwd, redir)
-		return err
-	}
-	if err := os.WriteFile(cfg.Ready, []byte("ready\n"), 0o644); err != nil {
-		restoreForwarding(fwd, redir)
-		disablePF(token)
-		return err
-	}
-	var once sync.Once
-	cleanup := func() {
-		once.Do(func() {
-			correct(bpf, cfg)
-			disablePF(token)
-			restoreForwarding(fwd, redir)
-			_ = os.Remove(cfg.Ready)
-		})
-	}
-	defer cleanup()
-
-	go acceptSteer(ln, cfg.Ano)
-	missed := 0
-	last := deviceKey(cfg.Devices)
-	for {
-		if _, err := os.Stat(cfg.Stop); err == nil {
-			return nil
-		}
-		if !anoUp(cfg.Ano) {
-			missed++
-			if missed >= 3 {
-				return nil
-			}
-		} else {
-			missed = 0
-		}
-		next, err := readSteer(path)
-		if err == nil {
-			prev := append([]SteerDevice(nil), cfg.Devices...)
-			cfg.Devices = next.Devices
-			key := deviceKey(cfg.Devices)
-			if key != last {
-				gone := missingDevices(prev, cfg.Devices)
-				if len(gone) > 0 {
-					saved := cfg.Devices
-					cfg.Devices = gone
-					correct(bpf, cfg)
-					cfg.Devices = saved
-				}
-				if err := loadRules(cfg); err == nil {
-					last = key
-				}
-			}
-		}
-		announce(bpf, cfg, false)
-		readARP(bpf, cfg)
-		time.Sleep(300 * time.Millisecond)
-	}
+	return fmt.Errorf("this path stays off because it restarted the Mac")
 }
 
 func acceptSteer(ln net.Listener, ano string) {
@@ -160,8 +86,9 @@ func handleSteer(conn net.Conn, ano string) {
 	if port == "80" {
 		protocol = "HTTP"
 	}
+	portNum, _ := strconv.Atoi(port)
 	if !forward {
-		_ = postNote(ano, client, host, protocol, category, len(buf), true)
+		_ = postNote(ano, client, host, protocol, category, portNum, len(buf), true)
 		return
 	}
 	target := ""
@@ -206,7 +133,7 @@ func handleSteer(conn net.Conn, ano string) {
 	<-done
 	<-done
 	if host != "" {
-		_ = postNote(ano, client, host, protocol, category, int(moved)+len(buf), false)
+		_ = postNote(ano, client, host, protocol, category, portNum, int(moved)+len(buf), false)
 	}
 }
 
@@ -284,9 +211,9 @@ func askAno(ano, addr, host string) (Decision, error) {
 	return decision, nil
 }
 
-func postNote(ano, addr, host, protocol, category string, n int, refused bool) error {
+func postNote(ano, addr, host, protocol, category string, port, n int, refused bool) error {
 	body, _ := json.Marshal(map[string]any{
-		"addr": addr, "host": host, "protocol": protocol, "category": category, "bytes": n, "refused": refused,
+		"addr": addr, "host": host, "protocol": protocol, "category": category, "port": port, "bytes": n, "refused": refused,
 	})
 	req, err := http.NewRequest(http.MethodPost, ano+"/api/via/note", bytes.NewReader(body))
 	if err != nil {
@@ -486,11 +413,11 @@ func openBPF(iface string) (int, error) {
 		unix.Close(fd)
 		return 0, err
 	}
-	if err := unix.IoctlSetInt(fd, unix.BIOCSHDRCMPLT, 1); err != nil {
+	if err := unix.IoctlSetPointerInt(fd, unix.BIOCSHDRCMPLT, 1); err != nil {
 		unix.Close(fd)
 		return 0, err
 	}
-	_ = unix.IoctlSetInt(fd, unix.BIOCIMMEDIATE, 1)
+	_ = unix.IoctlSetPointerInt(fd, unix.BIOCIMMEDIATE, 1)
 	_ = setARPFilter(fd)
 	_ = unix.SetNonblock(fd, true)
 	return fd, nil

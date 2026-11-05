@@ -9,6 +9,8 @@ type ProxyCard = {
   deviceName: string;
   room: string;
   destination: string;
+  port?: number;
+  addr?: string;
   activity: string;
   status: string;
   action: string;
@@ -24,6 +26,19 @@ const names: Record<string, string> = {
 
 function labelOf(card: ProxyCard) {
   return names[card.destination] ?? card.activity;
+}
+
+const servicePort: Record<string, number> = { AirPlay: 7000, Sonos: 1400, HTTPS: 443, HTTP: 80 };
+
+function leavingOf(card: ProxyCard) {
+  const dest = card.destination || "";
+  const recorded = card.port && card.port > 0 ? String(card.port) : "";
+  const port = recorded || (servicePort[dest] ? String(servicePort[dest]) : dest === "Cast" ? "8008/8009" : "");
+  if (dest.includes(":")) return dest;
+  if (dest.includes(".")) return port ? `${dest}:${port}` : dest;
+  if (card.addr && port) return `${card.addr}:${port}`;
+  if (port) return `${dest}:${port}`;
+  return dest;
 }
 
 function throughProxy(card: ProxyCard) {
@@ -106,7 +121,7 @@ export function ProxyMap() {
                 <p className="text-xs text-muted-foreground">{mapped ? `Re-routes to ${card.reroute}` : throughProxy(card) ? "Answers on this machine" : "Not through the proxy yet"}</p>
               </div>
               <div className="mt-4 flex flex-col gap-2 lg:flex-row lg:items-center">
-                <span className="min-w-0 truncate rounded-lg border bg-muted px-3 py-2 font-mono text-[12px] lg:max-w-xs lg:flex-1">{card.destination}</span>
+                <span className="min-w-0 truncate rounded-lg border bg-muted px-3 py-2 font-mono text-[12px] lg:max-w-xs lg:flex-1">{leavingOf(card)}</span>
                 <span className="text-center text-muted-foreground lg:px-1" aria-hidden>
                   →
                 </span>

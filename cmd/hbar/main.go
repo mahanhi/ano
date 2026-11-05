@@ -13,6 +13,7 @@ import (
 
 	"github.com/hbar/hbar/internal/agent"
 	"github.com/hbar/hbar/internal/envoyrun"
+	"github.com/hbar/hbar/internal/gate"
 	"github.com/hbar/hbar/internal/lan"
 	"github.com/hbar/hbar/internal/llm"
 	"github.com/hbar/hbar/internal/store"
@@ -37,6 +38,8 @@ func main() {
 	viaAddr, upstream := lan.ListenAddr()
 	path := via.Start(st, dataDir, upstream)
 	defer path.Stop()
+	gateway := gate.Start(st, dataDir)
+	go gateway.Loop()
 	withVia := func(view store.AdminView) store.AdminView {
 		status := path.Status()
 		view.ViaAddr = viaAddr
@@ -48,12 +51,16 @@ func main() {
 		view.SteerDetail = status.SteerDetail
 		return view
 	}
+	reload := func() error {
+		if err := envoy.Reload(); err != nil {
+			return err
+		}
+		return gateway.Refresh()
+	}
 	ag := &agent.Agent{
-		Store: st,
-		Model: llm.Client{Settings: llm.FromEnv()},
-		OnEnforce: func() error {
-			return envoy.Reload()
-		},
+		Store:     st,
+		Model:     llm.Client{Settings: llm.FromEnv()},
+		OnEnforce: reload,
 	}
 	go ag.Loop(context.Background())
 	go watchNetwork(st, path)
@@ -158,7 +165,7 @@ func main() {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := envoy.Reload(); err != nil {
+		if err := reload(); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -177,7 +184,7 @@ func main() {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := envoy.Reload(); err != nil {
+		if err := reload(); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -236,6 +243,27 @@ func main() {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"admin": withVia(view), "envoy": envoy.Status()})
+	})
+	mux.HandleFunc("GET /api/gate", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, gateway.Status())
+	})
+	mux.HandleFunc("POST /api/gate", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			On *bool `json:"on"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.On == nil {
+			writeErr(w, http.StatusBadRequest, errors.New("send on"))
+			return
+		}
+		if *body.On {
+			if err := gateway.Enable(); err != nil {
+				writeErr(w, http.StatusConflict, err)
+				return
+			}
+		} else {
+			gateway.Disable()
+		}
+		writeJSON(w, http.StatusOK, gateway.Status())
 	})
 	mux.HandleFunc("POST /api/admin/steer", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

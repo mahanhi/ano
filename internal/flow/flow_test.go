@@ -9,12 +9,12 @@ func TestParseCountsBytesToTheTelevision(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("flows %+v", got)
 	}
-	if got[0].Remote != "192.168.86.220" || got[0].Service != "Cast" || got[0].Bytes != 55139 || got[0].Protocol != "TCP" {
+	if got[0].Remote != "192.168.86.220" || got[0].Service != "Cast" || got[0].Port != 8009 || got[0].Bytes != 55139 || got[0].Protocol != "TCP" {
 		t.Fatalf("flow %+v", got[0])
 	}
 	var meter Meter
 	first := meter.Readings(got)
-	if len(first) != 1 || first[0].Delta != 55139 {
+	if len(first) != 1 || first[0].Delta != 55139 || first[0].Port != 8009 {
 		t.Fatalf("first %+v", first)
 	}
 	got[0].Bytes = 56000

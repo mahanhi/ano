@@ -29,6 +29,8 @@ type Device struct {
 	Name   string `json:"name"`
 	Kind   string `json:"kind"`
 	Room   string `json:"room"`
+	Addr   string `json:"addr"`
+	MAC    string `json:"mac"`
 	ViaAno bool   `json:"viaAno"`
 }
 
@@ -39,7 +41,10 @@ type Card struct {
 	DeviceName   string  `json:"deviceName"`
 	Room         string  `json:"room"`
 	Kind         string  `json:"kind"`
+	Addr         string  `json:"addr"`
+	MAC          string  `json:"mac"`
 	Destination  string  `json:"destination"`
+	Port         int     `json:"port"`
 	Category     string  `json:"category"`
 	Protocol     string  `json:"protocol"`
 	Activity     string  `json:"activity"`
@@ -235,6 +240,9 @@ CREATE TABLE IF NOT EXISTS samples (
 		return err
 	}
 	if err := s.ensureColumn("patterns", "protocol", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("patterns", "port", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("devices", "addr", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -1199,6 +1207,7 @@ type FlowNote struct {
 	Addr     string
 	Service  string
 	Protocol string
+	Port     int
 	Delta    int
 }
 
@@ -1232,9 +1241,13 @@ func (s *Store) NoteFlows(notes []FlowNote) error {
 		err = s.db.QueryRow(`SELECT id, bytes_out, observations FROM patterns WHERE device_id = ? AND destination = ?`, deviceID, note.Service).Scan(&patternID, &bytesOut, &observations)
 		if err == sql.ErrNoRows {
 			patternID = "seen-" + strings.ReplaceAll(deviceID, ":", "") + "-" + strings.ToLower(strings.ReplaceAll(note.Service, " ", ""))
-			evidence := "Bytes this computer exchanged with this device on " + note.Service + ". Ano is not in front of the device's other traffic."
-			if _, err = s.db.Exec(`INSERT INTO patterns (id, device_id, destination, category, protocol, evidence, observations, bytes_out, every_seconds, per_lookup_bytes) VALUES (?, ?, ?, 'seen', ?, ?, 0, 0, 0, 0)`,
-				patternID, deviceID, note.Service, protocol, evidence); err != nil {
+			where := note.Service
+			if note.Port > 0 {
+				where = fmt.Sprintf("%s:%d", note.Addr, note.Port)
+			}
+			evidence := "Bytes this computer exchanged with this device, leaving to " + where + ". Ano is not in front of the device's other traffic."
+			if _, err = s.db.Exec(`INSERT INTO patterns (id, device_id, destination, category, protocol, port, evidence, observations, bytes_out, every_seconds, per_lookup_bytes) VALUES (?, ?, ?, 'seen', ?, ?, ?, 0, 0, 0, 0)`,
+				patternID, deviceID, note.Service, protocol, note.Port, evidence); err != nil {
 				return err
 			}
 			sentence := evidence
@@ -1254,7 +1267,7 @@ func (s *Store) NoteFlows(notes []FlowNote) error {
 		if note.Delta > 0 {
 			bytesOut += note.Delta
 			observations++
-			if _, err = s.db.Exec(`UPDATE patterns SET bytes_out = ?, observations = ?, protocol = ? WHERE id = ?`, bytesOut, observations, protocol, patternID); err != nil {
+			if _, err = s.db.Exec(`UPDATE patterns SET bytes_out = ?, observations = ?, protocol = ?, port = CASE WHEN ? > 0 THEN ? ELSE port END WHERE id = ?`, bytesOut, observations, protocol, note.Port, note.Port, patternID); err != nil {
 				return err
 			}
 			if _, err = s.db.Exec(`INSERT INTO observations (at, device_id, destination, protocol, lookups, bytes) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -1280,7 +1293,7 @@ func (s *Store) NoteFlows(notes []FlowNote) error {
 func (s *Store) Devices() ([]Device, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id, name, kind, room, via_ano FROM devices ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, kind, room, addr, mac, via_ano FROM devices ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1289,7 +1302,7 @@ func (s *Store) Devices() ([]Device, error) {
 	for rows.Next() {
 		var d Device
 		var via int
-		if err := rows.Scan(&d.ID, &d.Name, &d.Kind, &d.Room, &via); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Kind, &d.Room, &d.Addr, &d.MAC, &via); err != nil {
 			return nil, err
 		}
 		d.ViaAno = via == 1
@@ -1586,7 +1599,7 @@ WHERE r.status = 'approved'`)
 	return out, rows.Err()
 }
 
-const cardColumns = `p.id, p.device_id, d.name, d.room, d.kind, p.destination, p.category, p.protocol,
+const cardColumns = `p.id, p.device_id, d.name, d.room, d.kind, d.addr, d.mac, p.destination, p.port, p.category, p.protocol,
        r.activity, r.sentence, r.consequence, r.suggestion, r.status, r.action,
        p.evidence, r.source, r.reroute_host, r.llm_action, r.llm_reason, p.observations, p.bytes_out, p.every_seconds, p.per_lookup_bytes,
        p.before_lookups, p.before_bytes, p.after_lookups, p.after_bytes`
@@ -1765,7 +1778,7 @@ type scanner interface {
 func scanCard(row scanner) (Card, error) {
 	var c Card
 	var bytesOut, every, per, beforeLookups, beforeBytes, afterLookups, afterBytes int
-	err := row.Scan(&c.ID, &c.DeviceID, &c.DeviceName, &c.Room, &c.Kind, &c.Destination, &c.Category, &c.Protocol, &c.Activity, &c.Sentence, &c.Consequence, &c.Suggestion, &c.Status, &c.Action, &c.Evidence, &c.Source, &c.Reroute, &c.LlmAction, &c.LlmReason, &c.Observations, &bytesOut, &every, &per, &beforeLookups, &beforeBytes, &afterLookups, &afterBytes)
+	err := row.Scan(&c.ID, &c.DeviceID, &c.DeviceName, &c.Room, &c.Kind, &c.Addr, &c.MAC, &c.Destination, &c.Port, &c.Category, &c.Protocol, &c.Activity, &c.Sentence, &c.Consequence, &c.Suggestion, &c.Status, &c.Action, &c.Evidence, &c.Source, &c.Reroute, &c.LlmAction, &c.LlmReason, &c.Observations, &bytesOut, &every, &per, &beforeLookups, &beforeBytes, &afterLookups, &afterBytes)
 	if err != nil {
 		return Card{}, err
 	}

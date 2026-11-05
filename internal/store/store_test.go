@@ -324,7 +324,7 @@ func TestNoteFlowsRecordsBytesWithoutInventingMore(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NoteFlows([]FlowNote{{Addr: "192.168.86.220", Service: "Cast", Protocol: "TCP", Delta: 55139}}); err != nil {
+	if err := s.NoteFlows([]FlowNote{{Addr: "192.168.86.220", Service: "Cast", Protocol: "TCP", Port: 8009, Delta: 55139}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Collect(); err != nil {
@@ -350,7 +350,7 @@ func TestNoteFlowsRecordsBytesWithoutInventingMore(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, card := range cards {
-		if card.Destination == "Cast" && card.Category != "seen" {
+		if card.Destination == "Cast" && (card.Category != "seen" || card.Port != 8009) {
 			t.Fatalf("card %+v", card)
 		}
 	}

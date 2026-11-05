@@ -223,7 +223,7 @@ func (a *Agent) observe() {
 		if reading.Delta < 0 {
 			continue
 		}
-		notes = append(notes, store.FlowNote{Addr: reading.Addr, Service: reading.Service, Protocol: reading.Protocol, Delta: reading.Delta})
+		notes = append(notes, store.FlowNote{Addr: reading.Addr, Service: reading.Service, Protocol: reading.Protocol, Port: reading.Port, Delta: reading.Delta})
 	}
 	_ = a.Store.NoteFlows(notes)
 }

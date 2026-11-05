@@ -1,10 +1,17 @@
 "use client";
 
+import { Box, Cctv, DoorOpen, Laptop, Lightbulb, Printer, Smartphone, Speaker, Thermometer, Tv } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
 export type RouteCard = {
   id: string;
+  deviceId?: string;
   deviceName: string;
   kind: string;
+  addr?: string;
+  mac?: string;
   destination: string;
+  port?: number;
   activity: string;
   status: string;
   action: string;
@@ -20,6 +27,19 @@ const names: Record<string, string> = {
 
 function labelOf(card: Pick<RouteCard, "destination" | "activity">) {
   return names[card.destination] ?? card.activity;
+}
+
+const servicePort: Record<string, number> = { AirPlay: 7000, Sonos: 1400, HTTPS: 443, HTTP: 80 };
+
+function leavingOf(card: RouteCard) {
+  const dest = card.destination || "";
+  const recorded = card.port && card.port > 0 ? String(card.port) : "";
+  const port = recorded || (servicePort[dest] ? String(servicePort[dest]) : dest === "Cast" ? "8008/8009" : "");
+  if (dest.includes(":")) return dest;
+  if (dest.includes(".")) return port ? `${dest}:${port}` : dest;
+  if (card.addr && port) return `${card.addr}:${port}`;
+  if (port) return `${dest}:${port}`;
+  return dest;
 }
 
 type Lane = "drop" | "direct" | "envoy";
@@ -46,18 +66,17 @@ function outcomeOf(card: RouteCard) {
 
 export function RouteMap({
   cards,
-  speakerOnly,
   onOpen,
   compact = false,
 }: {
   cards: RouteCard[];
-  speakerOnly: boolean;
   onOpen: (id: string) => void;
   compact?: boolean;
 }) {
   const dropped = cards.filter((card) => laneOf(card) === "drop");
   const direct = cards.filter((card) => laneOf(card) === "direct");
   const envoy = cards.filter((card) => laneOf(card) === "envoy");
+  const sources = sourcesOf(cards);
   const inbound = uniqueColors([...dropped, ...direct, ...envoy]);
   const outbound = uniqueColors([...direct, ...envoy]);
   const directColor = direct.some((card) => card.status !== "approved") ? "#FF9830" : "#73BF69";
@@ -71,7 +90,7 @@ export function RouteMap({
       )}
       <div className="route-stage w-full rounded-xl border bg-muted/60 px-4 py-4 sm:px-5 sm:py-5">
         <div className="route-board">
-          <Pill title="Speaker" detail="Kitchen" accent="#73BF69" />
+          <Sources devices={sources} />
           <Flow colors={inbound} />
           <Pill title="Wi-Fi" detail="Access point" />
           <Flow colors={inbound} />
@@ -89,7 +108,9 @@ export function RouteMap({
           <Pill title="Internet" detail="Outside" />
         </div>
         <p className="mt-4 text-xs leading-5 text-muted-foreground">
-          TV and thermostat share this Wi-Fi. {speakerOnly ? "The hall phone is not watched." : "The hall phone is included."}
+          {sources.length === 0
+            ? "The dots start when a device on this network sends a name."
+            : `Dots leave ${sourceSummary(sources)}, cross Wi-Fi, and reach Ano. A refused name stops there.`}
         </p>
       </div>
       {compact ? null : (
@@ -104,8 +125,9 @@ export function RouteMap({
                 <span className="size-1.5 shrink-0 rounded-full" style={{ background: colorOf(card) }} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium">{labelOf(card)}</span>
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground">{leavingOf(card)}</span>
                   <span className="block truncate text-[11px] text-muted-foreground">
-                    {card.deviceName} · {outcomeOf(card)}
+                    {card.deviceName} · {identityOf(card.kind, card.addr, card.mac)} · {outcomeOf(card)}
                   </span>
                 </span>
                 <span className="shrink-0 text-[12px] font-medium text-primary">Open</span>
@@ -125,6 +147,84 @@ function uniqueColors(cards: RouteCard[]) {
 function namesOn(cards: RouteCard[], empty: string) {
   if (cards.length === 0) return empty;
   return cards.map(labelOf).join(", ");
+}
+
+function sourcesOf(cards: RouteCard[]) {
+  const seen = new Map<string, { id: string; name: string; kind: string; addr: string; mac: string }>();
+  for (const card of cards) {
+    const key = card.deviceId || card.deviceName;
+    if (!key || seen.has(key)) continue;
+    seen.set(key, { id: key, name: card.deviceName, kind: card.kind || "unknown", addr: card.addr || "", mac: card.mac || "" });
+  }
+  return [...seen.values()];
+}
+
+function sourceSummary(devices: { name: string }[]) {
+  const names = devices.map((device) => device.name);
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 3).join(", ")}, and ${names.length - 3} more`;
+}
+
+function Sources({ devices }: { devices: { id: string; name: string; kind: string; addr: string; mac: string }[] }) {
+  return (
+    <div className="route-sources rounded-xl border bg-card px-2.5 py-2.5">
+      <p className="px-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Sources</p>
+      {devices.length === 0 ? (
+        <p className="mt-2 px-1 text-[13px] leading-5 text-muted-foreground">No device has sent a name yet.</p>
+      ) : (
+        <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto">
+          {devices.map((device) => (
+            <li key={device.id} className="flex items-center gap-2 rounded-lg px-1 py-1">
+              <DeviceMark kind={device.kind} />
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] leading-4 font-medium">{device.name}</span>
+                <span className="block truncate text-[11px] leading-4 text-muted-foreground">{identityOf(device.kind, device.addr, device.mac)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DeviceMark({ kind }: { kind: string }) {
+  const Icon = iconOf(kind);
+  return (
+    <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary" title={kindLabel(kind)}>
+      <Icon className="size-4" aria-hidden />
+    </span>
+  );
+}
+
+function iconOf(kind: string): LucideIcon {
+  if (kind === "speaker") return Speaker;
+  if (kind === "tv") return Tv;
+  if (kind === "phone") return Smartphone;
+  if (kind === "light") return Lightbulb;
+  if (kind === "printer") return Printer;
+  if (kind === "camera") return Cctv;
+  if (kind === "garage") return DoorOpen;
+  if (kind === "thermostat") return Thermometer;
+  if (kind === "computer") return Laptop;
+  return Box;
+}
+
+function identityOf(kind: string, addr?: string, mac?: string) {
+  return [kindLabel(kind), addr, mac].filter((part) => part && part.trim() !== "").join(" · ");
+}
+
+function kindLabel(kind: string) {
+  if (kind === "speaker") return "Speaker";
+  if (kind === "tv") return "TV";
+  if (kind === "phone") return "Phone";
+  if (kind === "light") return "Light";
+  if (kind === "printer") return "Printer";
+  if (kind === "camera") return "Camera";
+  if (kind === "garage") return "Garage";
+  if (kind === "thermostat") return "Thermostat";
+  if (kind === "computer") return "Computer";
+  return "Device";
 }
 
 function Pill({ title, detail, accent = "#8b95a3" }: { title: string; detail?: string; accent?: string }) {

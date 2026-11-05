@@ -24,6 +24,7 @@ type Reading struct {
 	Addr     string
 	Service  string
 	Protocol string
+	Port     int
 	Delta    int
 	Total    int
 }
@@ -85,6 +86,7 @@ func (m *Meter) Readings(flows []Flow) []Reading {
 	}
 	type agg struct {
 		proto string
+		port  int
 		delta int
 		total int
 	}
@@ -103,8 +105,11 @@ func (m *Meter) Readings(flows []Flow) []Reading {
 		id := flow.Remote + "\t" + flow.Service
 		row := grouped[id]
 		if row == nil {
-			row = &agg{proto: flow.Protocol}
+			row = &agg{proto: flow.Protocol, port: flow.Port}
 			grouped[id] = row
+		}
+		if row.port == 0 {
+			row.port = flow.Port
 		}
 		row.delta += delta
 		row.total += flow.Bytes
@@ -116,7 +121,7 @@ func (m *Meter) Readings(flows []Flow) []Reading {
 		if row.total <= 0 {
 			continue
 		}
-		out = append(out, Reading{Addr: remote, Service: service, Protocol: row.proto, Delta: row.delta, Total: row.total})
+		out = append(out, Reading{Addr: remote, Service: service, Protocol: row.proto, Port: row.port, Delta: row.delta, Total: row.total})
 	}
 	return out
 }

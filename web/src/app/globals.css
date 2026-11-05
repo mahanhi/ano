@@ -183,7 +183,8 @@
   background: var(--border);
 }
 
-.route-pill {
+.route-pill,
+.route-sources {
   width: 100%;
 }
 
@@ -223,6 +224,14 @@
     flex: 1 1 7rem;
     min-width: 7rem;
     padding: 0.85rem 1rem;
+  }
+
+  .route-sources {
+    width: auto;
+    flex: 1.15 1 12rem;
+    min-width: 12rem;
+    max-width: 15rem;
+    align-self: stretch;
   }
 
   .route-hbar {

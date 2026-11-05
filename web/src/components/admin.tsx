@@ -207,7 +207,7 @@ export function AdminPage({ open }: { open: (id: string) => void }) {
                       <span className="text-[11px] text-muted-foreground">{device.room}</span>
                     </span>
                     <span className="mt-1 block text-[12px] text-muted-foreground">
-                      {device.onNetwork ? `${device.addr}${device.mac ? ` · ${device.mac}` : ""}` : "Not seen on the router yet"}
+                      {device.onNetwork ? `${singularKind(device.kind)} · ${device.addr}${device.mac ? ` · ${device.mac}` : ""}` : "Not seen on the router yet"}
                       {device.protocols ? ` · ${device.protocols}` : ""}
                       {device.viaAno ? " · Through Ano" : ""}
                     </span>
@@ -244,27 +244,35 @@ export function AdminPage({ open }: { open: (id: string) => void }) {
   );
 }
 
+function singularKind(kind: string) {
+  if (kind === "speaker") return "Speaker";
+  if (kind === "phone") return "Phone";
+  if (kind === "tv") return "TV";
+  if (kind === "camera") return "Camera";
+  if (kind === "garage") return "Garage";
+  if (kind === "light") return "Light";
+  if (kind === "printer") return "Printer";
+  if (kind === "thermostat") return "Thermostat";
+  if (kind === "computer") return "Computer";
+  if (kind === "unknown") return "Device";
+  return kind || "Device";
+}
+
 function trafficLine(device: AdminDevice) {
   if (device.names === 0) {
-    return device.viaAno ? "Added. Waiting for the first name through Ano." : "No bytes seen from this computer yet";
+    return device.viaAno ? "Added. Its own packets still go to the router." : "No bytes seen from this computer yet";
   }
   return `${device.names} name${device.names === 1 ? "" : "s"} · seen ${bytes(device.bytesLeft)} · kept ${bytes(device.bytesKept)}`;
 }
 
 function addedHint(device: AdminDevice, admin: AdminView | null) {
-  const addr = admin?.viaAddr || "this computer";
-  const port = admin?.viaPort || 10081;
-  const fireTV = device.kind === "tv" && device.name.toLowerCase().includes("fire tv");
-  if (fireTV) {
-    if (admin?.steerOn) {
-      return "This Fire TV reaches the network through this computer and can keep its DNS. Streaming stays direct. Other names are monitored. Return to the router from the path above when you want the old path.";
-    }
-    return "This Fire TV can keep its DNS. Choose Bring Fire TVs through Ano above. Streaming stays direct. Other names are monitored here.";
+  if (!device.viaAno) {
+    return "Ano records conversations this computer already has with this device.";
   }
-  if (admin?.dnsReady) {
-    return `Point this device at Ano: DNS server ${addr}, or HTTP proxy ${addr} port ${port}. Streaming stays on the direct path.`;
+  if (admin?.steerOn) {
+    return "A redirect is still on. Return added devices to the router.";
   }
-  return `Point this device at the HTTP proxy ${addr} port ${port}. Allow DNS above when the device can use a DNS server instead.`;
+  return "Added. Its own packets still go to the router. That redirect stays off.";
 }
 
 function Path({
@@ -281,23 +289,24 @@ function Path({
   onSteer: (on: boolean) => void;
 }) {
   const added = admin?.groups.flatMap((group) => group.devices).filter((device) => device.viaAno).length ?? 0;
-  const fireTVs = admin?.groups.flatMap((group) => group.devices).filter((device) => device.viaAno && device.kind === "tv" && device.name.toLowerCase().includes("fire tv")).length ?? 0;
   return (
     <section className="rounded-xl border bg-card px-4 py-3.5">
       <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Through Ano</h2>
       <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-        {admin?.steerDetail || "A Fire TV can keep its DNS. Bring the televisions you added through this computer."}{" "}
-        {admin?.viaAddr ? `${added} device${added === 1 ? "" : "s"} added, including ${fireTVs} Fire TV${fireTVs === 1 ? "" : "s"}.` : "Ano is waiting for this computer’s Wi-Fi address."}
+        {admin?.steerDetail || "Outgoing packets stay on the router. Moving them through this Mac restarted it, so that path stays off."}{" "}
+        {admin?.viaAddr ? `${added} device${added === 1 ? "" : "s"} added.` : "Ano is waiting for this computer’s Wi-Fi address."}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => onSteer(!admin?.steerOn)}
-          disabled={steerBusy || fireTVs === 0}
-          className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-60"
-        >
-          {steerBusy ? "Waiting for permission…" : admin?.steerOn ? "Return Fire TVs to the router" : "Bring Fire TVs through Ano"}
-        </button>
+        {admin?.steerOn ? (
+          <button
+            type="button"
+            onClick={() => onSteer(false)}
+            disabled={steerBusy}
+            className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          >
+            {steerBusy ? "Waiting for permission…" : "Return added devices to the router"}
+          </button>
+        ) : null}
         {admin && !admin.dnsReady ? (
           <button
             type="button"

@@ -57,8 +57,8 @@ func TestProxyForwardsStreamingAndRefusesALeak(t *testing.T) {
 	}
 	leak := waitCard(t, st, "device-metrics-us.amazon.com")
 	stream := waitCard(t, st, "video.googlevideo.com")
-	if leak.Category != "outbound" || stream.Category != "stream" {
-		t.Fatalf("leak %s stream %s", leak.Category, stream.Category)
+	if leak.Category != "outbound" || leak.Port != 443 || stream.Category != "stream" || stream.Port != 443 {
+		t.Fatalf("leak %+v stream %+v", leak, stream)
 	}
 	if _, err := st.Decide(leak.ID, "drop"); err != nil {
 		t.Fatal(err)

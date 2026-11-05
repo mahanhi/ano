@@ -67,13 +67,14 @@ func (p *Proxy) serve(conn net.Conn) {
 	if port == "443" || method == "CONNECT" {
 		protocol = "HTTPS"
 	}
+	portNum, _ := strconv.Atoi(port)
 	if !decision.Forward {
 		body := "Ano refused this name. Streaming stays on the direct path."
 		if decision.Answer {
 			body = "Ano answered this name here."
 		}
 		writeStatus(conn, 403, body)
-		_ = p.Store.NoteVia(store.ViaNote{Addr: clientIP(conn.RemoteAddr()), Host: name, Protocol: protocol, Category: decision.Category, Bytes: len(body), Refused: true})
+		_ = p.Store.NoteVia(store.ViaNote{Addr: clientIP(conn.RemoteAddr()), Host: name, Protocol: protocol, Category: decision.Category, Port: portNum, Bytes: len(body), Refused: true})
 		return
 	}
 	if blockedTarget(name, p.DialPrivate) {
@@ -126,7 +127,7 @@ func (p *Proxy) serve(conn net.Conn) {
 	}()
 	<-done
 	<-done
-	_ = p.Store.NoteVia(store.ViaNote{Addr: clientIP(conn.RemoteAddr()), Host: name, Protocol: protocol, Category: decision.Category, Bytes: int(moved)})
+	_ = p.Store.NoteVia(store.ViaNote{Addr: clientIP(conn.RemoteAddr()), Host: name, Protocol: protocol, Category: decision.Category, Port: portNum, Bytes: int(moved)})
 }
 
 func requestLine(line string) (method, target string, ok bool) {

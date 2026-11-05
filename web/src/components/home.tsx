@@ -9,6 +9,7 @@ import { BytesLine, Panel, SharePie } from "@/components/charts";
 import { RouteMap } from "@/components/route-map";
 import { ProxyMap } from "@/components/proxy-map";
 import { SystemDesign } from "@/components/system-design";
+import { GatewayPanel } from "@/components/gateway";
 import { AdminPage } from "@/components/admin";
 
 type Metrics = {
@@ -26,7 +27,10 @@ type Card = {
   deviceName: string;
   room: string;
   kind: string;
+  addr?: string;
+  mac?: string;
   destination: string;
+  port?: number;
   category: string;
   protocol?: string;
   activity: string;
@@ -44,7 +48,7 @@ type Card = {
   metrics: Metrics;
 };
 
-type Device = { id: string; name: string; room: string; kind: string; viaAno?: boolean };
+type Device = { id: string; name: string; room: string; kind: string; addr?: string; mac?: string; viaAno?: boolean };
 type ViaPath = { addr: string; port: number; proxy: boolean; dns: boolean; dnsDetail: string; steer?: boolean; steerDetail?: string };
 type Decision = { at: string; deviceName: string; destination: string; outcome: string; detail: string };
 type Sample = {
@@ -98,6 +102,19 @@ const names: Record<string, string> = {
 
 function shortName(card: Pick<Card, "destination" | "activity">) {
   return names[card.destination] ?? card.activity;
+}
+
+const servicePort: Record<string, number> = { AirPlay: 7000, Sonos: 1400, HTTPS: 443, HTTP: 80 };
+
+function leavingTo(card: Pick<Card, "destination" | "port" | "addr">) {
+  const dest = card.destination || "";
+  const recorded = card.port && card.port > 0 ? String(card.port) : "";
+  const port = recorded || (servicePort[dest] ? String(servicePort[dest]) : dest === "Cast" ? "8008/8009" : "");
+  if (dest.includes(":")) return dest;
+  if (dest.includes(".")) return port ? `${dest}:${port}` : dest;
+  if (card.addr && port) return `${card.addr}:${port}`;
+  if (port) return `${dest}:${port}`;
+  return dest;
 }
 
 function bytes(n: number) {
@@ -319,18 +336,23 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
           {view.kind === "overview" ? (
             <Overview
               cards={visible}
+              pathCards={state.cards}
               series={state.series}
               decisions={state.decisions}
               envoy={state.envoy}
-              speakerOnly={state.settings.speakerOnly}
               open={(id) => setView({ kind: "pattern", id })}
               showRoute={() => setView({ kind: "route" })}
             />
           ) : null}
           {view.kind === "route" ? (
-            <RoutePage cards={visible} speakerOnly={state.settings.speakerOnly} open={(id) => setView({ kind: "pattern", id })} />
+            <RoutePage cards={state.cards} open={(id) => setView({ kind: "pattern", id })} />
           ) : null}
-          {view.kind === "system" ? <SystemDesign agent={state.agent} /> : null}
+          {view.kind === "system" ? (
+            <div className="space-y-8">
+              <GatewayPanel />
+              <SystemDesign agent={state.agent} />
+            </div>
+          ) : null}
           {view.kind === "admin" ? <AdminPage open={(id) => setView({ kind: "device", id })} /> : null}
           {view.kind === "devices" ? (
             <DevicesPage devices={state.devices} cards={state.cards} speakerOnly={state.settings.speakerOnly} open={(id) => setView({ kind: "device", id })} />
@@ -432,18 +454,18 @@ function StatusPill({ card }: { card: Card }) {
 
 function Overview({
   cards,
+  pathCards,
   series,
   decisions,
   envoy,
-  speakerOnly,
   open,
   showRoute,
 }: {
   cards: Card[];
+  pathCards: Card[];
   series: Sample[];
   decisions: Decision[];
   envoy: Envoy;
-  speakerOnly: boolean;
   open: (id: string) => void;
   showRoute: () => void;
 }) {
@@ -511,7 +533,7 @@ function Overview({
                         <ChevronRight className="size-3.5" />
                         <span className="sr-only">Open this name</span>
                       </button>
-                      <p className="text-xs text-muted-foreground">{card.destination}</p>
+                      <p className="font-mono text-xs text-muted-foreground">{leavingTo(card)}</p>
                     </td>
                     <td className="py-3 pr-3">{card.deviceName}</td>
                     <td className="py-3 pr-3 tabular-nums">{bytes(card.metrics.beforeBytes)}</td>
@@ -529,8 +551,8 @@ function Overview({
           <DecisionList decisions={decisions.slice(0, 6)} />
         </Panel>
       </div>
-      <Panel title="Path out of the house" hint="Speaker, Wi-Fi, Ano, router, modem">
-        <RouteMap cards={cards} speakerOnly={speakerOnly} onOpen={open} compact />
+      <Panel title="Path out of the house" hint="Devices, Wi-Fi, Ano, router, modem">
+        <RouteMap cards={pathCards} onOpen={open} compact />
         <button type="button" onClick={showRoute} className="mt-3 text-[13px] text-primary hover:underline">
           Open the full route
         </button>
@@ -539,16 +561,16 @@ function Overview({
   );
 }
 
-function RoutePage({ cards, speakerOnly, open }: { cards: Card[]; speakerOnly: boolean; open: (id: string) => void }) {
+function RoutePage({ cards, open }: { cards: Card[]; open: (id: string) => void }) {
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Route</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          The kitchen speaker reaches the outside world only by crossing Wi-Fi, then Ano, then the home router and the modem. A dropped name ends at Ano. An allowed name keeps going.
+          Each device that has sent a name is the source. Its traffic crosses Wi-Fi, then Ano, then the home router and the modem. A dropped name ends at Ano. An allowed name keeps going.
         </p>
       </div>
-      <RouteMap cards={cards} speakerOnly={speakerOnly} onOpen={open} />
+      <RouteMap cards={cards} onOpen={open} />
     </div>
   );
 }
@@ -600,10 +622,14 @@ function DevicesPage({
                           <span className="text-sm font-medium">{device.name}</span>
                           <span className="text-[11px] text-muted-foreground">{device.room}</span>
                         </span>
+                        <span className="mt-1 block text-[12px] text-muted-foreground">{deviceIdentity({ kind: device.kind, addr: device.addr, mac: device.mac })}</span>
                         <span className="mt-1 block text-[12px] text-muted-foreground">
                           {device.viaAno ? "Through Ano · " : ""}
                           {own.length === 0 ? "No names yet" : `${own.length} name${own.length === 1 ? "" : "s"} · ${protocolsOf(own)} · left ${bytes(left)} · kept ${bytes(kept)}`}
                         </span>
+                        {own.length > 0 ? (
+                          <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">To {own.map(leavingTo).join(", ")}</span>
+                        ) : null}
                         {speakerOnly && device.kind !== "speaker" ? (
                           <span className="mt-1 block text-[11px] text-muted-foreground">Hidden from Overview while Speakers only is on. Open still shows its names.</span>
                         ) : null}
@@ -625,6 +651,24 @@ function protocolsOf(cards: Card[]) {
   return names.length === 0 ? "protocol unknown" : names.join(", ");
 }
 
+function deviceIdentity(device: { room?: string; kind: string; addr?: string; mac?: string }) {
+  return [device.room, singularKind(device.kind), device.addr, device.mac].filter((part) => part && part.trim() !== "").join(" · ");
+}
+
+function singularKind(kind: string) {
+  if (kind === "speaker") return "Speaker";
+  if (kind === "phone") return "Phone";
+  if (kind === "tv") return "TV";
+  if (kind === "camera") return "Camera";
+  if (kind === "garage") return "Garage";
+  if (kind === "light") return "Light";
+  if (kind === "printer") return "Printer";
+  if (kind === "thermostat") return "Thermostat";
+  if (kind === "computer") return "Computer";
+  if (kind === "unknown") return "Device";
+  return kind;
+}
+
 function kindTitle(kind: string) {
   if (kind === "speaker") return "Speakers";
   if (kind === "phone") return "Phones";
@@ -640,21 +684,13 @@ function kindTitle(kind: string) {
 }
 
 function devicePath(device: Device, via?: ViaPath) {
-  const addr = via?.addr || "this computer";
-  const port = via?.port || 10081;
   if (!device.viaAno) {
-    return "Streaming stays on the direct path. Other names are monitored once this device sends them through Ano.";
+    return "Ano records conversations this computer already has with this device.";
   }
-  if (device.kind === "tv" && device.name.toLowerCase().includes("fire tv")) {
-    if (via?.steer) {
-      return "This Fire TV reaches the network through this computer and can keep its DNS. Streaming stays direct. Other names are monitored. Return it to the router when you want the old path.";
-    }
-    return via?.steerDetail || "This Fire TV can keep its DNS. Bring it through Ano from this computer. Streaming stays direct. Other names are monitored.";
+  if (via?.steer) {
+    return "A redirect is still on. Return this device to the router.";
   }
-  if (via?.dns) {
-    return `Set the DNS server to ${addr}, or the HTTP proxy to ${addr} port ${port}. Streaming stays on the direct path.`;
-  }
-  return `Set the HTTP proxy to ${addr} port ${port}. ${via?.dnsDetail || ""}`;
+  return "This device is added. Its own packets still go to the router. Moving those packets through this Mac restarted it, so that path stays off.";
 }
 
 function OpenChip({ label }: { label: string }) {
@@ -699,14 +735,13 @@ function DeviceView({
   const ids = new Set(cards.map((card) => card.id));
   const rows = sumLine(series.filter((sample) => ids.has(sample.patternId)));
   const [steerBusy, setSteerBusy] = useState(false);
-  const fireTV = device.kind === "tv" && device.name.toLowerCase().includes("fire tv") && device.viaAno;
   return (
     <div className="space-y-4">
       <div>
         <BackLink onClick={onBack}>All devices</BackLink>
         <h1 className="mt-2 text-xl font-semibold tracking-tight">{device.name}</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          {device.room} · {kindTitle(device.kind)}. Add it to Ano to monitor names other than streaming. Open a name for its charts. The rule buttons stay on this screen.
+          {deviceIdentity(device)}. Add it to Ano to monitor names other than streaming. Open a name for its charts. The rule buttons stay on this screen.
         </p>
       </div>
       <section className="rounded-xl border bg-card px-4 py-3.5">
@@ -726,17 +761,17 @@ function DeviceView({
           >
             {device.viaAno ? "Remove" : "Add to Ano"}
           </button>
-          {fireTV ? (
+          {via?.steer ? (
             <button
               type="button"
               disabled={steerBusy}
               onClick={() => {
                 setSteerBusy(true);
-                onSteer(!via?.steer).finally(() => setSteerBusy(false));
+                onSteer(false).finally(() => setSteerBusy(false));
               }}
               className="h-8 rounded-md bg-primary px-2.5 text-[12px] font-medium text-primary-foreground disabled:opacity-60"
             >
-              {steerBusy ? "Waiting for permission…" : via?.steer ? "Return to the router" : "Bring through Ano"}
+              {steerBusy ? "Waiting for permission…" : "Return to the router"}
             </button>
           ) : null}
         </div>
@@ -752,8 +787,8 @@ function DeviceView({
             >
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">{shortName(card)}</span>
-                <span className="block text-[12px] text-muted-foreground">
-                  {card.destination}
+                <span className="block font-mono text-[12px] text-muted-foreground">
+                  {leavingTo(card)}
                   {card.protocol ? ` · ${card.protocol}` : ""}
                 </span>
               </span>
@@ -977,7 +1012,7 @@ function PatternView({
           </p>
           <h1 className="mt-2 text-xl font-semibold tracking-tight">{shortName(card)}</h1>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {card.destination}
+            {leavingTo(card)}
             {card.protocol ? ` · ${card.protocol}` : ""}
           </p>
         </div>
@@ -1143,7 +1178,7 @@ function EnvoyView({
               <li key={card.id} className="flex flex-wrap items-baseline justify-between gap-2 border-b py-2 last:border-b-0">
                 <span>
                   <span className="font-medium">{shortName(card)}</span>
-                  <span className="ml-2 font-mono text-xs text-muted-foreground">{card.destination}</span>
+                  <span className="ml-2 font-mono text-xs text-muted-foreground">{leavingTo(card)}</span>
                 </span>
                 <span>{card.action === "drop" ? "Drop" : card.action === "allow_envoy" ? "Through Envoy" : "Direct"}</span>
               </li>

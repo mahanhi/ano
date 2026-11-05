@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"net"
@@ -15,7 +14,7 @@ import (
 	"github.com/hbar/hbar/internal/store"
 )
 
-// SteerDevice is one television whose Wi-Fi path Ano is taking.
+// SteerDevice is one added device whose outgoing packets Ano is recording.
 type SteerDevice struct {
 	Addr string `json:"addr"`
 	MAC  string `json:"mac"`
@@ -36,69 +35,13 @@ type SteerConfig struct {
 	Devices    []SteerDevice `json:"devices"`
 }
 
-// EnableSteer brings added Fire TVs through this computer. The television
-// keeps its own DNS. Streaming video is forwarded. Other names are recorded.
+// EnableSteer stays off. Claiming the router and forwarding those packets
+// through this Mac panicked the kernel and restarted it.
 func (s *Service) EnableSteer() (string, error) {
-	if s.steerOn() {
-		return "Fire TVs already reach the network through this computer.", nil
-	}
-	nic, err := lan.WifiNIC()
-	if err != nil {
-		return "", err
-	}
-	targets, err := fireTVs(s.store)
-	if err != nil {
-		return "", err
-	}
-	if len(targets) == 0 {
-		return "", fmt.Errorf("add a Fire TV on the device page first")
-	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return "", err
-	}
-	bin := filepath.Join(s.dir, "hbar-steer")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/hbar-steer")
-	build.Dir = repoDir()
-	if out, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("could not prepare the path helper: %s", strings.TrimSpace(string(out)))
-	}
-	_ = os.Remove(filepath.Join(s.dir, "via-steer.stop"))
-	_ = os.Remove(filepath.Join(s.dir, "via-steer.ready"))
-	cfg := SteerConfig{
-		Iface: nic.Iface, Gateway: nic.Gateway, GatewayMAC: nic.GatewayMAC,
-		OurMAC: nic.MAC, OurIP: nic.Addr, LAN: nic.LAN,
-		Listen:  net.JoinHostPort(nic.Addr, fmt.Sprintf("%d", SteerPort)),
-		Ready:   filepath.Join(s.dir, "via-steer.ready"),
-		Stop:    filepath.Join(s.dir, "via-steer.stop"),
-		Ano:     "http://127.0.0.1:8647",
-		Devices: targets,
-	}
-	path := filepath.Join(s.dir, "via-steer.json")
-	if err := writeConfig(path, cfg); err != nil {
-		return "", err
-	}
-	logPath := filepath.Join(s.dir, "via-steer.log")
-	launch := fmt.Sprintf("nohup %s %s >> %s 2>&1 &", quote(bin), quote(path), quote(logPath))
-	if err := runRoot(launch); err != nil {
-		return "", err
-	}
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(cfg.Ready); err == nil {
-			return "Fire TVs now reach the network through this computer. Streaming stays direct. Other names are monitored.", nil
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	detail := "The path did not start."
-	if b, err := os.ReadFile(logPath); err == nil && len(strings.TrimSpace(string(b))) > 0 {
-		lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-		detail = lines[len(lines)-1]
-	}
-	_ = os.WriteFile(cfg.Stop, []byte("stop\n"), 0o644)
-	return "", fmt.Errorf("%s", detail)
+	return "", fmt.Errorf("this path stays off because it restarted the Mac")
 }
 
-// DisableSteer sends the televisions back to the router.
+// DisableSteer sends the added devices back to the router.
 func (s *Service) DisableSteer() {
 	path := filepath.Join(s.dir, "via-steer.stop")
 	_ = os.WriteFile(path, []byte("stop\n"), 0o644)
@@ -111,7 +54,7 @@ func (s *Service) DisableSteer() {
 	}
 }
 
-// RefreshSteer rewrites the television list while the path is on.
+// RefreshSteer rewrites the added-device list while the path is on.
 func (s *Service) RefreshSteer() {
 	if !s.steerOn() {
 		return
@@ -120,7 +63,7 @@ func (s *Service) RefreshSteer() {
 	if err != nil {
 		return
 	}
-	targets, err := fireTVs(s.store)
+	targets, err := addedDevices(s.store, nic.Addr, nic.Gateway)
 	if err != nil {
 		return
 	}
@@ -143,25 +86,31 @@ func (s *Service) steerOn() bool {
 
 func (s *Service) steerDetail() string {
 	if s.steerOn() {
-		return "Fire TVs reach the network through this computer. Streaming stays direct. Other names are monitored. Stop returns them to the router."
+		return "Added devices reach the network through this computer. Outgoing packets are recorded here, then forwarded to the router. Streaming stays direct. Stop returns them to the router."
 	}
-	return "A Fire TV can keep its DNS. Bring it through Ano from this computer, and only the televisions you added are affected."
+	return "Outgoing packets stay on the router. Moving them through this Mac restarted it, so that path stays off."
 }
 
-func fireTVs(st *store.Store) ([]SteerDevice, error) {
+func addedDevices(st *store.Store, skip ...string) ([]SteerDevice, error) {
 	rows, err := st.ViaTargets()
 	if err != nil {
 		return nil, err
 	}
+	omit := map[string]bool{}
+	for _, addr := range skip {
+		omit[addr] = true
+	}
 	var out []SteerDevice
+	seen := map[string]bool{}
 	for _, row := range rows {
-		if row.Kind != "tv" || !strings.Contains(strings.ToLower(row.Name), "fire tv") {
+		if omit[row.Addr] || seen[row.Addr] {
 			continue
 		}
 		mac, ok := lan.CanonicalMAC(row.MAC)
 		if !ok || net.ParseIP(row.Addr) == nil {
 			continue
 		}
+		seen[row.Addr] = true
 		out = append(out, SteerDevice{Addr: row.Addr, MAC: mac})
 	}
 	return out, nil
