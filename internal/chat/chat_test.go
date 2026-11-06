@@ -144,6 +144,24 @@ func TestAskTalksUntilTheRequestIsComplete(t *testing.T) {
 		t.Fatalf("hourly %+v %v", schedule, err)
 	}
 
+	svc.Model = scripted{raw: `{"action":"none","say":"What should I change?"}`}
+	reply, err = svc.Ask(context.Background(), "what does this device do?")
+	if err != nil || reply.Changed || !strings.Contains(reply.Say, "privacy appliance") {
+		t.Fatal(reply, err)
+	}
+
+	svc.Model = scripted{raw: `{"action":"none","say":"Ano watches where home devices send."}`}
+	reply, err = svc.Ask(context.Background(), "what is Ano?")
+	if err != nil || reply.Changed || reply.Say != "Ano watches where home devices send." {
+		t.Fatal(reply, err)
+	}
+
+	svc.Model = scripted{raw: `not json`}
+	reply, err = svc.Ask(context.Background(), "how does Ano work?")
+	if err != nil || reply.Changed || !strings.Contains(reply.Say, "packet path") {
+		t.Fatal(reply, err)
+	}
+
 	svc.Model = scripted{raw: `{"action":"mode","mode":"active","say":"Sure."}`}
 	reply, err = svc.Ask(context.Background(), "start enforcing")
 	if err != nil || !reply.Changed || !strings.Contains(reply.Say, "active") {

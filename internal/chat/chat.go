@@ -45,6 +45,7 @@ const instruction = `You are Ano, talking with the person at home. Return one JS
 Speak in one or two short sentences.
 If they greet you or thank you, set action to none and answer the greeting in say. Do not bring up the schedule unless they mentioned it.
 If they ask a general question, set action to none and answer it in say. Use the current facts. Do not change anything.
+If they ask what Ano is, what this device does, how it works, or anything else about this product, set action to none and answer from the product description. Do not offer a change unless they asked for one.
 If they seem to want a change but left out a detail, set action to none. In say, ask one question and suggest the choices that fit what they said.
 Use a change action only when the request already names the whole change.
 action is one of: none, mode, schedule, review, drop, undrop, decide, speakers, gateway.
@@ -98,6 +99,12 @@ func (s *Service) converse(cmd command, user string) (Reply, error) {
 	say := cmd.Say
 	if cmd.Action != "" && cmd.Action != "none" && claimsDone(say) && !strings.Contains(say, "?") {
 		say = ""
+	}
+	if productAsk(user) {
+		if spoken := usable(say); spoken != "" && answersProduct(spoken) {
+			return Reply{Say: spoken}, nil
+		}
+		return Reply{Say: aboutSay(user)}, nil
 	}
 	if spoken := usable(say); spoken != "" {
 		return Reply{Say: spoken}, nil
@@ -181,8 +188,87 @@ func (s *Service) facts() (string, error) {
 	if len(listed) == 0 {
 		listed = []string{"none"}
 	}
-	return fmt.Sprintf("mode %s\nspeakers %s\nschedule %s every %d %s at %02d:%02d weekday %d monthday %d\nnames %s\ndrops %s",
-		mode, speaker, on, schedule.Every, schedule.Unit, schedule.Hour, schedule.Minute, schedule.Weekday, schedule.MonthDay, strings.Join(names, ", "), strings.Join(listed, ", ")), nil
+	return fmt.Sprintf("%s\nmode %s\nspeakers %s\nschedule %s every %d %s at %02d:%02d weekday %d monthday %d\nnames %s\ndrops %s",
+		productBrief, mode, speaker, on, schedule.Every, schedule.Unit, schedule.Hour, schedule.Minute, schedule.Weekday, schedule.MonthDay, strings.Join(names, ", "), strings.Join(listed, ", ")), nil
+}
+
+const productBrief = `Ano is this privacy appliance. It watches where home devices send, asks a local model what that pattern looks like, and applies Refuse or Send when a person presses the button or when Active mode is on. Passive watches and stores the suggestion. Active enforces Refuse and Send. A person's button wins over the model. The model stays off the packet path and reads the past 24 hours on a schedule. Ano stores the device, name, port, protocol, and the decision. It does not store audio, page contents, or credentials. The gateway stays off until a second Ethernet jack is connected.`
+
+func productAsk(user string) bool {
+	low := strings.ToLower(user)
+	if greeting(low) {
+		return false
+	}
+	if statusTopic(low) && !aboutDevice(low) {
+		return false
+	}
+	if aboutDevice(low) {
+		return true
+	}
+	if strings.Contains(low, "what does") || strings.Contains(low, "how does") || strings.Contains(low, "what is a") {
+		for _, topic := range []string{"refuse", "gateway", "review", "envoy", "proxy", "button", "packet", "model"} {
+			if strings.Contains(low, topic) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func statusTopic(low string) bool {
+	for _, word := range []string{"schedule", "how often", "speaker", "mode", "passive", "active"} {
+		if strings.Contains(low, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func aboutDevice(low string) bool {
+	for _, phrase := range []string{
+		"ano", "this device", "the device", "this appliance", "this product", "this thing",
+		"who are you", "what are you", "what do you do", "what can you do", "what is this",
+		"what's this", "whats this", "what does this", "how does this", "how do you",
+	} {
+		if strings.Contains(low, phrase) {
+			return true
+		}
+	}
+	if (strings.Contains(low, "tell me about") || strings.Contains(low, "explain")) && (strings.Contains(low, "you") || strings.Contains(low, "ano") || strings.Contains(low, "device") || strings.Contains(low, "product")) {
+		return true
+	}
+	return strings.Contains(low, "privacy")
+}
+
+func answersProduct(say string) bool {
+	low := strings.ToLower(say)
+	if strings.Contains(low, "what should i change") || strings.Contains(low, "what would you like") || strings.Contains(low, "which one") {
+		return false
+	}
+	for _, word := range []string{"ano", "device", "watch", "privacy", "refuse", "passive", "active", "traffic", "appliance", "packet", "home", "button", "gateway"} {
+		if strings.Contains(low, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func aboutSay(user string) string {
+	low := strings.ToLower(user)
+	switch {
+	case strings.Contains(low, "store") || strings.Contains(low, "record") || strings.Contains(low, "audio") || strings.Contains(low, "credential") || strings.Contains(low, "privacy"):
+		return "Ano stores the device, the name, the port, the protocol, and the decision. It does not store audio, page contents, or credentials."
+	case strings.Contains(low, "gateway") || strings.Contains(low, "where") || strings.Contains(low, "sit") || strings.Contains(low, "jack"):
+		return "Ano sits between the home Wi-Fi and the router. The gateway stays off until the second Ethernet jack is connected."
+	case strings.Contains(low, "passive") || strings.Contains(low, "active") || strings.Contains(low, "mode") || strings.Contains(low, "enforce"):
+		return "Passive watches and stores a suggestion. Active enforces Refuse and Send. A person's button wins over the model."
+	case strings.Contains(low, "refuse") || strings.Contains(low, "send") || strings.Contains(low, "button") || strings.Contains(low, "answer"):
+		return "Refuse stops a name. Send lets it go out. Answer here replies on Ano. Set aside stops enforcing that name."
+	case strings.Contains(low, "model") || strings.Contains(low, "packet") || strings.Contains(low, "how"):
+		return "The model stays off the packet path. It reads the past 24 hours on a schedule and suggests Refuse or Send."
+	default:
+		return "Ano is this privacy appliance. It watches where home devices send, and it can refuse a name when you press Refuse or when Active mode is on."
+	}
 }
 
 func parse(raw string) (command, error) {
