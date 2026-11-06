@@ -10,8 +10,8 @@ import (
 
 	"net"
 
-	"github.com/hbar/hbar/internal/lan"
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/lan"
+	"github.com/ano/ano/internal/store"
 )
 
 // SteerDevice is one added device whose outgoing packets Ano is recording.
@@ -86,9 +86,9 @@ func (s *Service) steerOn() bool {
 
 func (s *Service) steerDetail() string {
 	if s.steerOn() {
-		return "Added devices reach the network through this computer. Outgoing packets are recorded here, then forwarded to the router. Streaming stays direct. Stop returns them to the router."
+		return "Added devices reach the network through Ano. Outgoing packets are recorded, then forwarded to the router. Streaming stays direct."
 	}
-	return "Outgoing packets stay on the router. Moving them through this Mac restarted it, so that path stays off."
+	return "Outgoing packets stay on the router. Ano leaves that redirect off."
 }
 
 func addedDevices(st *store.Store, skip ...string) ([]SteerDevice, error) {

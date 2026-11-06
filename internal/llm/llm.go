@@ -22,17 +22,17 @@ type Settings struct {
 	Model string
 }
 
-// FromEnv reads HBAR_QWEN_URL and HBAR_QWEN_MODEL. Empty values use Ollama and qwen2.5:0.5b.
+// FromEnv reads ANO_LLM_URL and ANO_LLM_MODEL. Empty values use Ollama and qwen2.5:0.5b.
 func FromEnv() Settings {
-	url := strings.TrimRight(os.Getenv("HBAR_QWEN_URL"), "/")
+	url := strings.TrimRight(os.Getenv("ANO_LLM_URL"), "/")
 	if url == "" {
 		url = "http://127.0.0.1:11434/v1"
 	}
-	model := strings.TrimSpace(os.Getenv("HBAR_QWEN_MODEL"))
+	model := strings.TrimSpace(os.Getenv("ANO_LLM_MODEL"))
 	if model == "" {
 		model = "qwen2.5:0.5b"
 	}
-	kind := strings.TrimSpace(os.Getenv("HBAR_QWEN_KIND"))
+	kind := strings.TrimSpace(os.Getenv("ANO_LLM_KIND"))
 	if kind == "" {
 		kind = "ollama"
 	}
@@ -112,7 +112,7 @@ Cadence: %s
 Send time: %s
 Similar traffic of this kind from this device: %s
 Judge only this device.`, brief.DeviceName, brief.Kind, brief.Room, brief.Destination, brief.Protocol, brief.Category, brief.Evidence, brief.Lookups, brief.Bytes, brief.Cadence, brief.SendTime, brief.Similar)
-	raw, err := c.complete(ctx, prompt)
+	raw, err := c.complete(ctx, systemPrompt, prompt)
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -130,16 +130,21 @@ sendTime says which hours this device's sends fall in.
 similar compares this name with the other names of the same kind from this device.
 protocol is the protocol this device used for these sends.`
 
-func (c Client) complete(ctx context.Context, prompt string) (string, error) {
+// Ask sends one instruction to the local model and returns its text.
+func (c Client) Ask(ctx context.Context, system, prompt string) (string, error) {
+	return c.complete(ctx, system, prompt)
+}
+
+func (c Client) complete(ctx context.Context, system, prompt string) (string, error) {
 	if c.Settings.Kind == "ollama" {
-		return c.completeOllama(ctx, prompt)
+		return c.completeOllama(ctx, system, prompt)
 	}
 	payload := map[string]any{
 		"model":       c.Settings.Model,
 		"temperature": 0,
 		"max_tokens":  220,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": system},
 			{"role": "user", "content": prompt},
 		},
 	}
@@ -181,7 +186,7 @@ func (c Client) complete(ctx context.Context, prompt string) (string, error) {
 	return text, nil
 }
 
-func (c Client) completeOllama(ctx context.Context, prompt string) (string, error) {
+func (c Client) completeOllama(ctx context.Context, system, prompt string) (string, error) {
 	origin := strings.TrimSuffix(c.Settings.URL, "/v1")
 	payload := map[string]any{
 		"model":  c.Settings.Model,
@@ -192,7 +197,7 @@ func (c Client) completeOllama(ctx context.Context, prompt string) (string, erro
 			"num_predict": 220,
 		},
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": system},
 			{"role": "user", "content": prompt},
 		},
 	}

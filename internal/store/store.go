@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hbar/hbar/internal/model"
+	"github.com/ano/ano/internal/model"
 
 	_ "modernc.org/sqlite"
 )
@@ -263,6 +263,21 @@ CREATE TABLE IF NOT EXISTS samples (
 	if err := s.ensureColumn("settings", "router_iface", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	for _, col := range []struct{ name, decl string }{
+		{"review_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"review_hour", "INTEGER NOT NULL DEFAULT 3"},
+		{"review_minute", "INTEGER NOT NULL DEFAULT 0"},
+		{"review_last", "TEXT NOT NULL DEFAULT ''"},
+		{"review_detail", "TEXT NOT NULL DEFAULT ''"},
+		{"review_every", "INTEGER NOT NULL DEFAULT 1"},
+		{"review_unit", "TEXT NOT NULL DEFAULT 'day'"},
+		{"review_weekday", "INTEGER NOT NULL DEFAULT 0"},
+		{"review_monthday", "INTEGER NOT NULL DEFAULT 1"},
+	} {
+		if err := s.ensureColumn("settings", col.name, col.decl); err != nil {
+			return err
+		}
+	}
 	if _, err = s.db.Exec(`
 CREATE TABLE IF NOT EXISTS observations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -286,6 +301,14 @@ CREATE TABLE IF NOT EXISTS sends (
 		return err
 	}
 	if err := s.ensureColumn("sends", "protocol", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS blocks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  UNIQUE(name, port)
+)`); err != nil {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO settings (id, speaker_only) VALUES (1, 1) ON CONFLICT(id) DO NOTHING`)
@@ -510,6 +533,93 @@ func (s *Store) SetMode(mode string) error {
 	return s.logLocked("Ano", "", "mode", "Active mode. AI Inference drop and allow choices are enforced.")
 }
 
+// ReviewSchedule is when AI Inference reads observed traffic.
+type ReviewSchedule struct {
+	Enabled  bool
+	Every    int
+	Unit     string
+	Hour     int
+	Minute   int
+	Weekday  int
+	MonthDay int
+	Last     string
+	Detail   string
+}
+
+// ReviewSchedule returns the daily review settings.
+func (s *Store) ReviewSchedule() (ReviewSchedule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reviewScheduleLocked()
+}
+
+func (s *Store) reviewScheduleLocked() (ReviewSchedule, error) {
+	var out ReviewSchedule
+	var enabled int
+	err := s.db.QueryRow(`SELECT review_enabled, review_every, review_unit, review_hour, review_minute, review_weekday, review_monthday, review_last, review_detail FROM settings WHERE id = 1`).Scan(&enabled, &out.Every, &out.Unit, &out.Hour, &out.Minute, &out.Weekday, &out.MonthDay, &out.Last, &out.Detail)
+	out.Enabled = enabled == 1
+	out.Unit = normalizeUnit(out.Unit)
+	if out.Every < 1 {
+		out.Every = 1
+	}
+	if out.Hour < 0 || out.Hour > 23 {
+		out.Hour = 3
+	}
+	if out.Minute < 0 || out.Minute > 59 {
+		out.Minute = 0
+	}
+	if out.Weekday < 0 || out.Weekday > 6 {
+		out.Weekday = 0
+	}
+	if out.MonthDay < 1 || out.MonthDay > 28 {
+		out.MonthDay = 1
+	}
+	return out, err
+}
+
+func normalizeUnit(unit string) string {
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "minute", "hour", "day", "week", "month":
+		return strings.ToLower(strings.TrimSpace(unit))
+	default:
+		return "day"
+	}
+}
+
+// SetReviewSchedule stores how often AI Inference reads observed traffic.
+func (s *Store) SetReviewSchedule(enabled bool, every int, unit string, hour, minute, weekday, monthDay int) error {
+	unit = normalizeUnit(unit)
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return errors.New("choose an hour from 0 to 23 and a minute from 0 to 59")
+	}
+	if weekday < 0 || weekday > 6 {
+		return errors.New("choose a day of the week")
+	}
+	if monthDay < 1 || monthDay > 28 {
+		return errors.New("choose a day of the month from 1 to 28")
+	}
+	limit := map[string]int{"minute": 59, "hour": 24, "day": 31, "week": 52, "month": 12}[unit]
+	if every < 1 || every > limit {
+		return fmt.Errorf("choose how many %ss, from 1 to %d", unit, limit)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	on := 0
+	if enabled {
+		on = 1
+	}
+	_, err := s.db.Exec(`UPDATE settings SET review_enabled = ?, review_every = ?, review_unit = ?, review_hour = ?, review_minute = ?, review_weekday = ?, review_monthday = ? WHERE id = 1`, on, every, unit, hour, minute, weekday, monthDay)
+	return err
+}
+
+// MarkReview records the last daily review.
+func (s *Store) MarkReview(at time.Time, detail string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE settings SET review_last = ?, review_detail = ? WHERE id = 1`, at.UTC().Format(time.RFC3339), strings.TrimSpace(detail))
+	return err
+}
+
 // Pending returns names whose collected counts the model has not judged yet.
 func (s *Store) Pending(minNew int) ([]ReviewItem, error) {
 	if minNew < 1 {
@@ -526,6 +636,46 @@ WHERE r.source != 'customer'
 AND p.category NOT IN ('seen', 'stream')
 AND (r.llm_at = '' OR p.observations >= r.llm_lookups + ?)
 ORDER BY p.id`, minNew)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReviewItem
+	for rows.Next() {
+		var item ReviewItem
+		if err := rows.Scan(&item.ID, &item.DeviceID, &item.DeviceName, &item.Kind, &item.Room, &item.Destination, &item.Category, &item.Evidence, &item.Lookups, &item.Bytes); err != nil {
+			return nil, err
+		}
+		facts, err := s.dayFactsLocked(item.DeviceID, item.Destination, item.Category)
+		if err != nil {
+			return nil, err
+		}
+		item.Cadence = facts.cadence
+		item.SendTime = facts.sendTime
+		item.Similar = facts.similar
+		item.Protocol = facts.protocol
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// Observed returns names that sent traffic in the past day and have not been judged since startOfDay.
+func (s *Store) Observed(since, startOfDay time.Time) ([]ReviewItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+SELECT p.id, p.device_id, d.name, d.kind, d.room, p.destination, p.category, p.evidence, p.observations, p.bytes_out
+FROM patterns p
+JOIN devices d ON d.id = p.device_id
+JOIN rules r ON r.pattern_id = p.id
+WHERE r.source != 'customer'
+AND p.category NOT IN ('seen', 'stream', 'outbound')
+AND EXISTS (
+  SELECT 1 FROM sends s
+  WHERE s.device_id = p.device_id AND s.destination = p.destination AND s.at >= ?
+)
+AND (r.llm_at = '' OR r.llm_at < ?)
+ORDER BY p.id`, since.UTC().Format(time.RFC3339), startOfDay.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
@@ -971,20 +1121,29 @@ type AdminGroup struct {
 
 // AdminView is the traffic regulator: the router, grouped devices, and collected traffic.
 type AdminView struct {
-	RouterAddr  string       `json:"routerAddr"`
-	RouterIface string       `json:"routerIface"`
-	RouterAt    string       `json:"routerAt"`
-	Connected   bool         `json:"connected"`
-	Detail      string       `json:"detail"`
-	Mode        string       `json:"mode"`
-	Groups      []AdminGroup `json:"groups"`
-	ViaAddr     string       `json:"viaAddr"`
-	ViaPort     int          `json:"viaPort"`
-	ProxyReady  bool         `json:"proxyReady"`
-	DNSReady    bool         `json:"dnsReady"`
-	DNSDetail   string       `json:"dnsDetail"`
-	SteerOn     bool         `json:"steerOn"`
-	SteerDetail string       `json:"steerDetail"`
+	RouterAddr     string       `json:"routerAddr"`
+	RouterIface    string       `json:"routerIface"`
+	RouterAt       string       `json:"routerAt"`
+	Connected      bool         `json:"connected"`
+	Detail         string       `json:"detail"`
+	Mode           string       `json:"mode"`
+	ReviewOn       bool         `json:"reviewOn"`
+	ReviewEvery    int          `json:"reviewEvery"`
+	ReviewUnit     string       `json:"reviewUnit"`
+	ReviewHour     int          `json:"reviewHour"`
+	ReviewMinute   int          `json:"reviewMinute"`
+	ReviewWeekday  int          `json:"reviewWeekday"`
+	ReviewMonthDay int          `json:"reviewMonthDay"`
+	ReviewLast     string       `json:"reviewLast"`
+	ReviewDetail   string       `json:"reviewDetail"`
+	Groups         []AdminGroup `json:"groups"`
+	ViaAddr        string       `json:"viaAddr"`
+	ViaPort        int          `json:"viaPort"`
+	ProxyReady     bool         `json:"proxyReady"`
+	DNSReady       bool         `json:"dnsReady"`
+	DNSDetail      string       `json:"dnsDetail"`
+	SteerOn        bool         `json:"steerOn"`
+	SteerDetail    string       `json:"steerDetail"`
 }
 
 // ConnectRouter records the home router and the devices seen on its link.
@@ -1105,8 +1264,14 @@ func (s *Store) AdminView() (AdminView, error) {
 	defer s.mu.Unlock()
 	var view AdminView
 	var mode string
-	if err := s.db.QueryRow(`SELECT router_addr, router_iface, router_at, mode FROM settings WHERE id = 1`).Scan(&view.RouterAddr, &view.RouterIface, &view.RouterAt, &mode); err != nil {
+	var reviewOn int
+	if err := s.db.QueryRow(`SELECT router_addr, router_iface, router_at, mode, review_enabled, review_every, review_unit, review_hour, review_minute, review_weekday, review_monthday, review_last, review_detail FROM settings WHERE id = 1`).Scan(&view.RouterAddr, &view.RouterIface, &view.RouterAt, &mode, &reviewOn, &view.ReviewEvery, &view.ReviewUnit, &view.ReviewHour, &view.ReviewMinute, &view.ReviewWeekday, &view.ReviewMonthDay, &view.ReviewLast, &view.ReviewDetail); err != nil {
 		return AdminView{}, err
+	}
+	view.ReviewOn = reviewOn == 1
+	view.ReviewUnit = normalizeUnit(view.ReviewUnit)
+	if view.ReviewEvery < 1 {
+		view.ReviewEvery = 1
 	}
 	if mode != "active" {
 		mode = "passive"
@@ -1245,14 +1410,14 @@ func (s *Store) NoteFlows(notes []FlowNote) error {
 			if note.Port > 0 {
 				where = fmt.Sprintf("%s:%d", note.Addr, note.Port)
 			}
-			evidence := "Bytes this computer exchanged with this device, leaving to " + where + ". Ano is not in front of the device's other traffic."
+			evidence := "Bytes Ano recorded with this device, leaving to " + where + "."
 			if _, err = s.db.Exec(`INSERT INTO patterns (id, device_id, destination, category, protocol, port, evidence, observations, bytes_out, every_seconds, per_lookup_bytes) VALUES (?, ?, ?, 'seen', ?, ?, ?, 0, 0, 0, 0)`,
 				patternID, deviceID, note.Service, protocol, note.Port, evidence); err != nil {
 				return err
 			}
 			sentence := evidence
 			if _, err = s.db.Exec(`INSERT INTO rules (id, pattern_id, action, status, source, sentence, consequence, suggestion, activity) VALUES (?, ?, 'ignore', 'suggested', 'seen', ?, ?, '', ?)`,
-				newID(), patternID, sentence, "Nothing is enforced. This is traffic this computer could see.", note.Service); err != nil {
+				newID(), patternID, sentence, "Nothing is enforced. Ano recorded this traffic.", note.Service); err != nil {
 				return err
 			}
 			bytesOut = 0
@@ -1298,7 +1463,7 @@ func (s *Store) Devices() ([]Device, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Device
+	out := []Device{}
 	for rows.Next() {
 		var d Device
 		var via int
@@ -1392,7 +1557,7 @@ ORDER BY p.destination`)
 func (s *Store) Decide(patternID, action string) (Card, error) {
 	var category string
 	if err := s.db.QueryRow(`SELECT category FROM patterns WHERE id = ?`, patternID).Scan(&category); err == nil && category == "seen" {
-		return Card{}, errors.New("this is traffic this computer could see, and it is not a name Ano can refuse")
+		return Card{}, errors.New("Ano recorded this traffic, and it is not a name Ano can refuse")
 	}
 	if category == "stream" {
 		return Card{}, errors.New("streaming stays on the direct path")

@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 // ServeDNS answers queries from devices added in the UI.

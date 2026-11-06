@@ -98,6 +98,15 @@ func TestSharedMACKeepsEachAddress(t *testing.T) {
 	}
 }
 
+func TestDefaultRouteNamesTheHomePort(t *testing.T) {
+	if ifaceFromDefaultRoute("default via 10.0.0.1 dev enp97s0 proto dhcp src 10.0.0.6 metric 100\n") != "enp97s0" {
+		t.Fatal("linux route")
+	}
+	if ifaceFromDefaultRoute("   route to: default\ninterface: en0\n") != "en0" {
+		t.Fatal("mac route")
+	}
+}
+
 func TestRinconMAC(t *testing.T) {
 	mac := rinconMAC("uuid:RINCON_48A6B80221CA01400::urn:schemas-upnp-org:device:ZonePlayer:1")
 	if mac != "48:a6:b8:02:21:ca" {

@@ -11,6 +11,7 @@ import { ProxyMap } from "@/components/proxy-map";
 import { SystemDesign } from "@/components/system-design";
 import { GatewayPanel } from "@/components/gateway";
 import { AdminPage } from "@/components/admin";
+import { Chat } from "@/components/chat";
 
 type Metrics = {
   beforeLookups: number;
@@ -79,6 +80,7 @@ export type DashboardState = {
   envoy: Envoy;
   agent?: AgentStatus;
   via?: ViaPath;
+  addr?: string;
 };
 
 type View =
@@ -115,6 +117,11 @@ function leavingTo(card: Pick<Card, "destination" | "port" | "addr">) {
   if (card.addr && port) return `${card.addr}:${port}`;
   if (port) return `${dest}:${port}`;
   return dest;
+}
+
+function visibleListen(value: string) {
+  if (!value || value.startsWith("127.0.0.1:") || value.startsWith("[::1]:")) return "Ano";
+  return value;
 }
 
 function bytes(n: number) {
@@ -157,7 +164,7 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
     const response = await fetch("/api/state?all=1", { cache: "no-store" });
     if (!response.ok) throw new Error("Ano did not answer");
     const body = (await response.json()) as DashboardState;
-    setState({ ...body, series: body.series ?? [] });
+    setState({ ...body, series: body.series ?? [], cards: body.cards ?? [], devices: body.devices ?? [], decisions: body.decisions ?? [] });
     setError("");
   }
 
@@ -266,8 +273,9 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
     );
   }
 
+  const devices = state.devices ?? [];
   const selected = view.kind === "pattern" ? visible.find((card) => card.id === view.id) : undefined;
-  const device = view.kind === "device" ? state.devices.find((item) => item.id === view.id) : undefined;
+  const device = view.kind === "device" ? devices.find((item) => item.id === view.id) : undefined;
 
   return (
     <div className="flex h-dvh justify-center bg-[oklch(0.93_0.012_260)] p-3 text-foreground md:p-5">
@@ -277,7 +285,8 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
           <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-[13px] font-semibold text-primary-foreground">A</span>
           <div className="hidden min-w-0 md:block">
             <p className="text-sm font-semibold tracking-tight">Ano</p>
-            <p className="text-[11px] text-muted-foreground">Home traffic</p>
+            <p className="text-[11px] text-muted-foreground">Secured Home</p>
+            {state.addr ? <p className="truncate font-mono text-[11px] text-muted-foreground">{state.addr}</p> : null}
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3 md:px-3">
@@ -355,7 +364,7 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
           ) : null}
           {view.kind === "admin" ? <AdminPage open={(id) => setView({ kind: "device", id })} /> : null}
           {view.kind === "devices" ? (
-            <DevicesPage devices={state.devices} cards={state.cards} speakerOnly={state.settings.speakerOnly} open={(id) => setView({ kind: "device", id })} />
+            <DevicesPage devices={devices} cards={state.cards ?? []} speakerOnly={state.settings.speakerOnly} open={(id) => setView({ kind: "device", id })} />
           ) : null}
           {view.kind === "device" && device ? (
             <DeviceView
@@ -385,6 +394,7 @@ export function Home({ initialState = null }: { initialState?: DashboardState | 
             <EnvoyView envoy={state.envoy} cards={visible} host={host} setHost={setHost} probe={probe} onProbe={runProbe} />
           ) : null}
         </main>
+        <Chat onChanged={() => load().catch((err: Error) => setError(err.message))} />
       </div>
     </div>
   );
@@ -481,7 +491,7 @@ function Overview({
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Overview</h1>
           <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
-            Passive mode collects every device, including the protocol each send uses. AI Inference chooses drop or allow per device from that device's past 24 hours. Active mode is what enforces that choice.
+            Passive collects. Active enforces. AI Inference suggests drop or allow from the past 24 hours.
           </p>
         </div>
         <span className="rounded-full border bg-card px-2.5 py-1 text-[12px] text-muted-foreground">
@@ -492,7 +502,7 @@ function Overview({
         <Stat label="Bytes left" value={bytes(left)} note="Recorded before a drop, or still leaving" tone="#FF9830" />
         <Stat label="Bytes kept" value={bytes(kept)} note="Refused at Ano after a drop" tone="#73BF69" />
         <Stat label="Lookups refused" value={String(refused)} note="Speaker checks that did not go out" tone="#F2495C" />
-        <Stat label="Envoy" value={envoy.running ? "Running" : "Down"} note={envoy.running ? `${envoy.routes} routes on ${envoy.listen}` : envoy.message} tone="#5794F2" />
+        <Stat label="Envoy" value={envoy.running ? "Running" : "Down"} note={envoy.running ? `${envoy.routes} routes` : envoy.message} tone="#5794F2" />
       </div>
       <Panel title="Bytes over time" hint="Left the house vs kept here">
         <BytesLine
@@ -567,7 +577,7 @@ function RoutePage({ cards, open }: { cards: Card[]; open: (id: string) => void 
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Route</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          Each device that has sent a name is the source. Its traffic crosses Wi-Fi, then Ano, then the home router and the modem. A dropped name ends at Ano. An allowed name keeps going.
+          Device, Wi-Fi, Ano, router, modem. A drop stops at Ano.
         </p>
       </div>
       <RouteMap cards={cards} onOpen={open} />
@@ -597,9 +607,10 @@ function DevicesPage({
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Devices</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          Each row opens that device. On the next screen, open a name to see its charts and the AI Inference read. The rule buttons stay on the device and do not open a new screen.
+          Open a device, then a name, for its charts.
         </p>
       </div>
+      {kinds.length === 0 ? <p className="text-sm text-muted-foreground">No devices yet.</p> : null}
       {kinds.map((kind) => (
         <section key={kind}>
           <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{kindTitle(kind)}</h2>
@@ -685,12 +696,12 @@ function kindTitle(kind: string) {
 
 function devicePath(device: Device, via?: ViaPath) {
   if (!device.viaAno) {
-    return "Ano records conversations this computer already has with this device.";
+    return "Ano records the conversations it can see with this device.";
   }
   if (via?.steer) {
     return "A redirect is still on. Return this device to the router.";
   }
-  return "This device is added. Its own packets still go to the router. Moving those packets through this Mac restarted it, so that path stays off.";
+  return "This device is added. Its own packets still go to the router. Ano leaves that redirect off.";
 }
 
 function OpenChip({ label }: { label: string }) {
@@ -741,7 +752,7 @@ function DeviceView({
         <BackLink onClick={onBack}>All devices</BackLink>
         <h1 className="mt-2 text-xl font-semibold tracking-tight">{device.name}</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          {deviceIdentity(device)}. Add it to Ano to monitor names other than streaming. Open a name for its charts. The rule buttons stay on this screen.
+          {deviceIdentity(device)}. Streaming stays direct. Open a name for its charts.
         </p>
       </div>
       <section className="rounded-xl border bg-card px-4 py-3.5">
@@ -1078,7 +1089,7 @@ function Decisions({ decisions }: { decisions: Decision[] }) {
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Decisions</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Every drop, allow, and dismissal, newest first.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Newest drop, allow, or dismissal.</p>
       </div>
       <Panel title="Log">
         <DecisionTable decisions={decisions} />
@@ -1161,12 +1172,12 @@ function EnvoyView({
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Envoy</h1>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
-          Dropped names are refused here. Allowed names go straight out and never enter Envoy. Only a route marked allow through Envoy is proxied.
+          Refused names stop here. Allowed names go out. Only Answer here is proxied.
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <Stat label="Process" value={envoy.running ? "Running" : "Down"} note={envoy.message || "No message"} />
-        <Stat label="Listen" value={envoy.listen || "—"} note="Household traffic aimed at Ano" />
+        <Stat label="Listen" value={visibleListen(envoy.listen)} note="Household traffic aimed at Ano" />
         <Stat label="Routes" value={String(envoy.routes)} note="Approved names Envoy knows" />
       </div>
       <Panel title="Approved names">

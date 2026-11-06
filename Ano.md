@@ -8,9 +8,9 @@ This file is the saved plan. The proof of concept in this repository runs on the
 
 The first runnable slice controls speaker traffic.
 
-- Go process (`cmd/hbar`) is the advisor and the policy store. It runs on this machine. It writes one card per speaker pattern and does not enforce a suggestion by itself.
+- Go process (`cmd/ano`) is the advisor and the policy store. It runs on this machine. It writes one card per speaker pattern and does not enforce a suggestion by itself.
 - The speaker-only switch is on by default. Turn it off to see other devices, such as the hall phone.
-- Next.js review screen on port 4317. Drop, Allow directly, or Allow through Envoy.
+- Next.js review screen. On Ano it is HTTP port 80. The Mac development server uses port 4317. Drop, Allow directly, or Allow through Envoy.
 - Envoy on port 10080 loads only approved `drop` and `allow_envoy` routes. Direct allows never enter Envoy. Suggested cards are absent from the Envoy config.
 - Seeded speaker names, from public discussion of Echo telemetry: `device-metrics-us.amazon.com`, `device-metrics-us-2.amazon.com` (usage reports, suggested drop), and `avs-alexa-na.amazon.com` (voice assistant cloud, suggested allow, because dropping it stops spoken answers).
 
@@ -48,7 +48,7 @@ One Ethernet cable from the appliance to a LAN port. DHCP tells every device to 
 flowchart TB
   internet[Internet] --- modem[Modem]
   modem --- router[HomeRouter]
-  router --- hbar[Ano]
+  router --- ano[Ano]
   router --- ap[WiFiAccessPoint]
   ap --- tv[TV]
   ap --- speaker[Speaker]
@@ -72,8 +72,8 @@ The access point's uplink moves to Ano. A second Ethernet port faces the home ro
 flowchart TB
   internet[Internet] --- modem[Modem]
   modem --- router[HomeRouter]
-  router --- hbar[Ano]
-  hbar --- ap[WiFiAccessPoint]
+  router --- ano[Ano]
+  ano --- ap[WiFiAccessPoint]
   ap --- tv[TV]
   ap --- speaker[Speaker]
   ap --- thermo[Thermostat]
@@ -134,7 +134,7 @@ Measured llama.cpp generation on a Pi 5 16 GB with an active cooler and NVMe (Ma
 
 A larger model is a second machine: an N100 or N150 barebones, 16 GB minimum and 32 GB when the board accepts it. Generation there is still a few tokens per second.
 
-On the proof of concept, the advisor is the Go process on this computer (`hbar-speaker-advisor`). It fills the same role as the later on-box language model: classify the name, reuse past choices, write the sentence. Phase 2 replaces the sentence writer with llama.cpp. The decision rules stay.
+On the proof of concept, the advisor is the Go process on this computer (`ano-speaker-advisor`). It fills the same role as the later on-box language model: classify the name, reuse past choices, write the sentence. Phase 2 replaces the sentence writer with llama.cpp. The decision rules stay.
 
 ## Phases
 

@@ -4,7 +4,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 // Decision is what Ano does with one name from a device that was added.

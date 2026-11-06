@@ -14,7 +14,7 @@ export default async function Page() {
         <div className="max-w-md">
           <p className="text-base font-medium">Ano did not answer</p>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            The screen is up, but the control process on port 8647 did not return the dashboard. Refresh once that process is running.
+            The screen is up. Ano on port 8647 did not answer. Refresh when it is running.
           </p>
         </div>
       </main>

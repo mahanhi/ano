@@ -1,4 +1,4 @@
-module github.com/hbar/hbar
+module github.com/ano/ano
 
 go 1.22
 

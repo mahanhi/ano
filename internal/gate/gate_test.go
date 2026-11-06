@@ -50,19 +50,19 @@ func TestParseStatesKeepsHomeInternetConversations(t *testing.T) {
 
 func TestRenderNFTForwardsTwoPortsAndDropsAnAddress(t *testing.T) {
 	plan := Plan{WAN: "enp1s0", WANAddr: "10.0.0.35", LAN: "enP2p1s0", LANAddr: "192.168.50.1", LANNet: "192.168.50.0/24"}
-	rules, err := RenderNFT(plan, []string{"3.3.3.3"})
+	rules, err := RenderNFT(plan, []string{"3.3.3.3"}, []PortDrop{{Port: 443, IPs: []string{"9.9.9.9"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(rules, "route-to") || !strings.Contains(rules, `oifname "enp1s0" ip saddr 192.168.50.0/24 masquerade`) || !strings.Contains(rules, "3.3.3.3") {
+	if strings.Contains(rules, "route-to") || !strings.Contains(rules, `oifname "enp1s0" ip saddr 192.168.50.0/24 masquerade`) || !strings.Contains(rules, "redirect to :10082") || !strings.Contains(rules, "redirect to :10083") || !strings.Contains(rules, "th dport { 53, 853 }") || !strings.Contains(rules, "th dport 443") || !strings.Contains(rules, "9.9.9.9") || !strings.Contains(rules, `oifname "enp1s0" drop`) || !strings.Contains(rules, "3.3.3.3") {
 		t.Fatal(rules)
 	}
 	plan.LAN = plan.WAN
-	if _, err := RenderNFT(plan, nil); err == nil {
+	if _, err := RenderNFT(plan, nil, nil); err == nil {
 		t.Fatal("same port was accepted")
 	}
 	plan.LAN = "enP2p1s0"
-	if _, err := RenderNFT(plan, []string{"not-an-ip"}); err == nil {
+	if _, err := RenderNFT(plan, []string{"not-an-ip"}, nil); err == nil {
 		t.Fatal("a name was accepted as an address")
 	}
 }
@@ -73,11 +73,41 @@ func TestRenderDHCPKeepsTheRouterPortOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "interface=enP2p1s0") || !strings.Contains(text, "except-interface=enp1s0") || !strings.Contains(text, "dhcp-option=option:router,192.168.50.1") || !strings.Contains(text, "address=/device-metrics.example.com/") || strings.Contains(text, "192.168.50.1,") {
+	if !strings.Contains(text, "interface=enP2p1s0") || !strings.Contains(text, "except-interface=enp1s0") || !strings.Contains(text, "dhcp-option=option:router,192.168.50.1") || !strings.Contains(text, "address=/device-metrics.example.com/") || !strings.Contains(text, "address=/ano.home.security.ai/192.168.50.1") || strings.Contains(text, "192.168.50.1,") {
 		t.Fatal(text)
 	}
 	if strings.Contains(text, "dhcp-range=192.168.50.1,") {
 		t.Fatal(text)
+	}
+}
+
+func TestScreenDNSAnswersThePiOnly(t *testing.T) {
+	text := ScreenDNS("10.0.0.6")
+	if !strings.Contains(text, "listen-address=10.0.0.6") || !strings.Contains(text, "address=/ano.home.security.ai/10.0.0.6") || !strings.Contains(text, "no-dhcp-interface=*") {
+		t.Fatal(text)
+	}
+}
+
+func TestHostsKeepsTheScreenName(t *testing.T) {
+	body := "127.0.0.1 localhost\n10.0.0.9 ano.home.security.ai\n# keep ano.home.security.ai in this note\n"
+	got := hostsWithUI(body, "10.0.0.6")
+	if strings.Count(got, "ano.home.security.ai") != 2 || !strings.Contains(got, "10.0.0.6 ano.home.security.ai\n") || strings.Contains(got, "10.0.0.9") || !strings.Contains(got, "# keep") {
+		t.Fatal(got)
+	}
+}
+
+func TestParseIPAddrIgnoresLoopback(t *testing.T) {
+	text := "" +
+		"1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n" +
+		"    inet 127.0.0.1/8 scope host lo\n" +
+		"2: enp97s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n" +
+		"    inet 10.0.0.6/24 brd 10.0.0.255 scope global enp97s0\n"
+	ifaces := ParseIPAddr(text)
+	if len(ifaces) != 1 || ifaces[0].Name != "enp97s0" {
+		t.Fatalf("ports %+v", ifaces)
+	}
+	if _, err := Choose(ifaces, "enp97s0"); err == nil {
+		t.Fatal("loopback was accepted as the home port")
 	}
 }
 

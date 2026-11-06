@@ -8,7 +8,7 @@ export function SystemDesign({
       <header className="max-w-3xl">
         <h1 className="text-xl font-semibold tracking-tight">How this setup works</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Ano is the agent. It collects device metadata into SQLite, asks AI Inference for drop or allow, and exposes that to this screen. Passive mode only collects. Active mode enforces AI Inference. A person&apos;s button still overrides it. AI Inference is not on the packet path.
+          Ano collects and asks AI Inference. Passive watches. Active enforces. Your button wins. The model stays off the packet path.
         </p>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           {agent
@@ -18,28 +18,28 @@ export function SystemDesign({
       </header>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">On this computer</h2>
+        <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">On Ano</h2>
         <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch">
           <Box
             kicker="Screen"
             title="Next.js"
-            port="127.0.0.1:4317"
+            port="0.0.0.0:80"
             lines={["Overview, route, and charts", "Sends Refuse, Send, Answer here, and Set aside", "Reads /api/state every 2 seconds"]}
           />
           <Arrow label="Forwards /api" />
           <Box
             kicker="Control"
             title="Go Ano"
-            port="127.0.0.1:8647"
+            port=""
             lines={["Collects every device and the protocol it sends", "AI Inference reviews each device from the past 24 hours", "Enforces only in active mode"]}
             accent
           />
           <Arrow label="Approved names" />
           <Box
-            kicker="Enforcement demo"
+            kicker="The way out"
             title="Envoy"
-            port="127.0.0.1:10080"
-            lines={["Refuse answers 403", "Answer here answers 200 locally", "Send and Set aside answer 404"]}
+            port="0.0.0.0:10082"
+            lines={["Carries TCP and UDP, including HTTPS and QUIC", "Drops a refused endpoint for every protocol", "Ano stores the record afterwards"]}
           />
         </div>
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
@@ -47,14 +47,14 @@ export function SystemDesign({
             <p className="text-xs tracking-wide text-muted-foreground uppercase">Memory</p>
             <p className="mt-1 text-base font-medium">SQLite · data/ano.db</p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Devices, one card per device and hostname, the protocol of each send, the approved rule, and the decision log. Go is the only writer.
+              Devices, names, protocols, rules, and the decision log.
             </p>
           </div>
           <div className="rounded-md border bg-card px-4 py-3">
             <p className="text-xs tracking-wide text-muted-foreground uppercase">Envoy files</p>
             <p className="mt-1 text-base font-medium">data/envoy.yaml</p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Rewritten and the process restarted after Refuse or Answer here. Admin stays on 127.0.0.1:19001. Send and Set aside are left out of the file.
+              Rewritten after Refuse or Answer here. Send and Set aside stay out.
             </p>
           </div>
         </div>
@@ -65,27 +65,27 @@ export function SystemDesign({
           <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">When a name first appears</h2>
           <ol className="mt-3 space-y-3">
             <Step n={1} title="One card per hostname">
-              Each device keeps its own card for a hostname, with the protocol that device used. A burst of the same lookup does not become a pile of cards.
+              One card per device and name, with the protocol. Repeats stay one card.
             </Step>
-            <Step n={2} title="The advisor writes a sentence">
-              The Go advisor classifies the name (usage reports, voice, ads, or unknown) and suggests drop or allow. An earlier choice for that kind of name wins over the default.
+            <Step n={2} title="Ano writes a sentence">
+              Ano classifies the name and suggests drop or allow. An earlier choice wins.
             </Step>
             <Step n={3} title="Nothing is enforced yet">
-              The card waits on the screen. Envoy does not learn the suggestion. The route picture still shows that name leaving the house.
+              Envoy does not learn the suggestion. The route still shows it leaving.
             </Step>
           </ol>
         </div>
         <div>
           <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">When you press Refuse</h2>
           <ol className="mt-3 space-y-3">
-            <Step n={1} title="The screen posts the choice">
-              The browser calls POST /api/cards/…/decide. Go stores the rule as an approved drop and freezes the before counts.
+            <Step n={1} title="The choice is stored">
+              Refuse becomes an approved drop. The before counts freeze.
             </Step>
             <Step n={2} title="The log and the chart update">
-              A decision row is written. Every two seconds the refused lookups and the bytes kept here increase. The bytes that left stay put.
+              Refused lookups and bytes kept here increase. Bytes that left stay put.
             </Step>
             <Step n={3} title="Envoy reloads">
-              Go writes envoy.yaml from Refuse and Answer here, then restarts Envoy. Checking that hostname returns 403.
+              That name returns 403.
             </Step>
           </ol>
         </div>
@@ -99,7 +99,7 @@ export function SystemDesign({
               <tr>
                 <th className="px-4 py-2 font-medium">Your choice</th>
                 <th className="px-4 py-2 font-medium">Stored rule</th>
-                <th className="px-4 py-2 font-medium">Envoy on this machine</th>
+                <th className="px-4 py-2 font-medium">On Ano</th>
                 <th className="px-4 py-2 font-medium">Route picture</th>
               </tr>
             </thead>
@@ -119,7 +119,7 @@ export function SystemDesign({
               <tr className="border-t border">
                 <td className="px-4 py-3 font-medium">Answer here</td>
                 <td className="px-4 py-3">approved allow envoy</td>
-                <td className="px-4 py-3">200 on this machine, or re-routed when Proxy has a target</td>
+                <td className="px-4 py-3">200 on Ano, or the Proxy target</td>
                 <td className="px-4 py-3">Blue dot passes through the Envoy lane</td>
               </tr>
               <tr className="border-t border">
@@ -132,26 +132,28 @@ export function SystemDesign({
           </table>
         </div>
         <p className="text-sm leading-6 text-muted-foreground">
-          Answer here does not open a connection to Amazon on this proof of concept. The 200 is a local stand-in so you can see that the route was accepted. A real proxy to the vendor is the later inline box.
+          Answer here is a local 200, not a connection to the vendor.
         </p>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="max-w-3xl">
-          <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">What the route picture is standing in for</h2>
+          <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">Route picture</h2>
           <p className="mt-3 text-sm leading-6">
-            The route page draws the home layout this slice is practicing: speaker, Wi-Fi, Ano, home router, modem, internet. On that future box, Ano is in front of the access point, DNS is the first gate, and Refuse is a real packet drop in nftables. Envoy keeps only the names you chose with Answer here.
+            Envoy carries TCP and UDP, including HTTPS and QUIC. A refused name gets no address. A refused address is dropped. DNS stays on Ano.
           </p>
           <p className="mt-3 text-sm leading-6 text-muted-foreground">
-            This computer is not that gateway. It does not sit in front of your Wi-Fi, it does not install firewall rules, and it does not store speaker audio or any payload. The advisor here is the Go classifier. A small local model can replace the sentence writer later. It still runs when a card is created, not on each packet.
+            Start stays off until the second Ethernet jack is connected. The model runs on the schedule, not on each packet.
           </p>
         </div>
         <div>
           <h2 className="text-sm font-medium tracking-wide text-muted-foreground uppercase">Ports</h2>
           <ul className="mt-3 divide-y divide-border rounded-md border text-sm">
-            <Port name="Review screen" value="4317" />
+            <Port name="Review screen" value="80" />
             <Port name="Go processor" value="8647" />
-            <Port name="Envoy listen" value="10080" />
+            <Port name="Envoy TCP" value="10082" />
+            <Port name="Envoy UDP" value="10083" />
+            <Port name="Envoy name check" value="10080" />
             <Port name="Envoy admin" value="19001" />
           </ul>
         </div>
@@ -165,7 +167,7 @@ function Box({ kicker, title, port, lines, accent }: { kicker: string; title: st
     <article className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 ${accent ? "border-primary/40 bg-card" : "border bg-card"}`}>
       <p className="text-[10px] tracking-wide text-muted-foreground uppercase">{kicker}</p>
       <h3 className="mt-0.5 text-base font-semibold tracking-tight">{title}</h3>
-      <p className="font-mono text-xs text-muted-foreground">{port}</p>
+      {port && !port.startsWith("127.0.0.1:") ? <p className="font-mono text-xs text-muted-foreground">{port}</p> : null}
       <ul className="mt-3 space-y-1.5 text-sm leading-5">
         {lines.map((line) => (
           <li key={line}>{line}</li>

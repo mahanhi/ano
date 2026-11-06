@@ -4,7 +4,7 @@ import "strings"
 import "testing"
 
 func TestRenderOmitsDirectAllowsAndSuggested(t *testing.T) {
-	cfg := Render(Options{ListenPort: 10080, AdminPort: 19001, AccessLog: "/tmp/hbar-access.log"}, []Route{
+	cfg := Render(Options{ListenPort: 10080, AdminPort: 19001, AccessLog: "/tmp/ano-access.log"}, []Route{
 		{Destination: "device-metrics-us.amazon.com", Action: "drop"},
 	})
 	if !strings.Contains(cfg, "device-metrics-us.amazon.com") {
@@ -19,7 +19,7 @@ func TestRenderOmitsDirectAllowsAndSuggested(t *testing.T) {
 }
 
 func TestRenderProxyRoute(t *testing.T) {
-	cfg := Render(Options{AccessLog: "/tmp/hbar-access.log"}, []Route{
+	cfg := Render(Options{AccessLog: "/tmp/ano-access.log"}, []Route{
 		{Destination: "example-speaker.test", Action: "allow_envoy"},
 	})
 	if !strings.Contains(cfg, "status: 200") || !strings.Contains(cfg, "allow_envoy") {
@@ -30,8 +30,18 @@ func TestRenderProxyRoute(t *testing.T) {
 	}
 }
 
+func TestRenderEgressDoesNotCallAno(t *testing.T) {
+	cfg := Render(Options{AccessLog: "/tmp/ano-access.log", Egress: true, DropIPs: []string{"3.3.3.3"}}, nil)
+	if !strings.Contains(cfg, "ano_egress") || !strings.Contains(cfg, "ano_udp") || !strings.Contains(cfg, "ORIGINAL_DST") || !strings.Contains(cfg, "port_value: 10082") || !strings.Contains(cfg, "port_value: 10083") || !strings.Contains(cfg, "3.3.3.3") {
+		t.Fatal(cfg)
+	}
+	if strings.Contains(cfg, "ext_authz") || strings.Contains(cfg, "ext_proc") {
+		t.Fatal(cfg)
+	}
+}
+
 func TestRenderProxyReroute(t *testing.T) {
-	cfg := Render(Options{AccessLog: "/tmp/hbar-access.log"}, []Route{
+	cfg := Render(Options{AccessLog: "/tmp/ano-access.log"}, []Route{
 		{Destination: "device-metrics-us.amazon.com", Action: "allow_envoy", Reroute: "logs.example.net"},
 	})
 	if !strings.Contains(cfg, "host_rewrite_literal: \"logs.example.net\"") {

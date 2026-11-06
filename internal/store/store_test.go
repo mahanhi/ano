@@ -4,10 +4,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpeakerCardsStaySuggestedUntilYouDecide(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "hbar.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestSpeakerCardsStaySuggestedUntilYouDecide(t *testing.T) {
 }
 
 func TestSetRerouteMapsAnyNameThroughEnvoy(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "hbar.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestSetRerouteMapsAnyNameThroughEnvoy(t *testing.T) {
 }
 
 func TestPastDayShowsCadenceAndSimilarTraffic(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "hbar.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestPastDayShowsCadenceAndSimilarTraffic(t *testing.T) {
 }
 
 func TestPassiveCollectsEveryDeviceAndDoesNotEnforceQwen(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "hbar.db"))
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,5 +354,47 @@ func TestNoteFlowsRecordsBytesWithoutInventingMore(t *testing.T) {
 		if card.Destination == "Cast" && (card.Category != "seen" || card.Port != 8009) {
 			t.Fatalf("card %+v", card)
 		}
+	}
+}
+
+func TestDailyReviewUsesThePastDayAndKeepsTheSchedule(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.LoadExample(); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := s.ReviewSchedule()
+	if err != nil || !schedule.Enabled || schedule.Every != 1 || schedule.Unit != "day" || schedule.Hour != 3 || schedule.Minute != 0 {
+		t.Fatalf("schedule %+v %v", schedule, err)
+	}
+	if err := s.SetReviewSchedule(false, 2, "week", 21, 30, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err = s.ReviewSchedule()
+	if err != nil || schedule.Enabled || schedule.Every != 2 || schedule.Unit != "week" || schedule.Hour != 21 || schedule.Weekday != 1 {
+		t.Fatalf("saved %+v %v", schedule, err)
+	}
+	if err := s.SetReviewSchedule(true, 1, "day", 24, 0, 0, 1); err == nil {
+		t.Fatal("accepted hour 24")
+	}
+	now := time.Now()
+	items, err := s.Observed(now.Add(-24*time.Hour), now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("observed %d", len(items))
+	}
+	for _, item := range items {
+		if item.Cadence == "" || item.Protocol == "" {
+			t.Fatalf("missing pattern %+v", item)
+		}
+	}
+	view, err := s.AdminView()
+	if err != nil || view.ReviewHour != 21 || view.ReviewMinute != 30 || view.ReviewOn {
+		t.Fatalf("admin %+v %v", view, err)
 	}
 }

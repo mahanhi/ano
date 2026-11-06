@@ -7,9 +7,11 @@ import (
 
 func canApply() bool { return false }
 
+func publishScreen() {}
+
 // Enable refuses on macOS. The earlier path restarted this Mac.
 func (s *Service) Enable() error {
-	return fmt.Errorf("the gateway runs on the Orange Pi, not on this Mac")
+	return fmt.Errorf("the gateway runs on Ano, not on this Mac")
 }
 
 // Disable clears the local flag. It does not change forwarding.

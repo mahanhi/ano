@@ -99,7 +99,7 @@ export function ProxyMap() {
       <div>
         <h1 className="text-[22px] font-semibold tracking-tight">Proxy</h1>
         <p className="mt-1 max-w-3xl text-[13px] leading-5 text-muted-foreground">
-          Map where Envoy sends a name. Saving puts that name through the proxy and rewrites the host to the one you enter, on port 443. Clear the target to keep Answer here on this machine.
+          Set where Envoy sends a name, on port 443. Clear the target to answer on Ano.
         </p>
       </div>
       {error ? <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">{error}</p> : null}

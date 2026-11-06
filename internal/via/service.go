@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 const (

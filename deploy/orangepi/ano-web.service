@@ -1,0 +1,16 @@
+[Unit]
+Description=Ano review screen
+After=network-online.target ano.service
+Wants=ano.service
+StartLimitIntervalSec=0
+
+[Service]
+WorkingDirectory=/opt/ano/web
+Environment=NODE_ENV=production
+Environment=PORT=80
+ExecStart=/usr/local/bin/npm run start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

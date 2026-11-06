@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 // Service watches forwarded internet conversations while Ano is the gateway.
@@ -36,7 +36,9 @@ type Status struct {
 }
 
 // Start prepares the gateway. It does not turn forwarding on.
+// On Ano it also records the screen name in /etc/hosts.
 func Start(st *store.Store, dir string) *Service {
+	publishScreen()
 	return &Service{store: st, dir: dir, detail: "Ano is not the gateway yet."}
 }
 
@@ -56,7 +58,7 @@ func (s *Service) Status() Status {
 		detail = fmt.Sprintf("Router-side port %s is %s. Access-point port %s is %s on %s. A device is recorded after it uses %s as its gateway.",
 			plan.WAN, plan.WANAddr, plan.LAN, plan.LANAddr, plan.LANNet, plan.LANAddr)
 		if !canApply() {
-			detail += " This Mac only shows the ports. Start the gateway on the Orange Pi."
+			detail += " The gateway starts on Ano."
 		}
 	}
 	return Status{On: s.on, Ready: ready, CanStart: canApply() && ready && !s.on, Detail: detail, WAN: plan.WAN, WANAddr: plan.WANAddr, LAN: plan.LAN, LANAddr: plan.LANAddr, LANNet: plan.LANNet}
@@ -103,9 +105,16 @@ func (s *Service) Collect() error {
 // Loop collects while the process is up.
 func (s *Service) Loop() {
 	tick := time.NewTicker(2 * time.Second)
+	names := time.NewTicker(10 * time.Minute)
 	defer tick.Stop()
-	for range tick.C {
-		_ = s.Collect()
+	defer names.Stop()
+	for {
+		select {
+		case <-tick.C:
+			_ = s.Collect()
+		case <-names.C:
+			_ = s.Refresh()
+		}
 	}
 }
 

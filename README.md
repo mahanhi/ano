@@ -1,46 +1,40 @@
 # Ano
 
-Ano is a home privacy appliance. It sits between the household and the internet, records where each device is sending, and asks AI Inference whether that destination should be refused or sent. A person decides. The model is not on the packet path, and Ano does not store payloads.
+Ano is a home privacy appliance. It records where each device sends, asks a local model whether that destination should be refused or sent, and enforces only after a person or Active mode says so. The model stays off the packet path. Ano stores metadata, and it does not store payloads.
 
-This repository is the proof of concept on the computer you are using, plus the gateway that runs on an Orange Pi 6 Plus. The longer design note is [Ano.md](Ano.md).
+The screen, the schedule, and Ask Ano run on this computer and on the Orange Pi. The gateway, which forwards the home network, runs on the Orange Pi after a second Ethernet jack is connected. This Mac is a development machine on the home network. It is not the house gateway.
+
+- [Requirements](REQUIREMENTS.md) is what the running app must do.
+- [System design](SYSTEM-DESIGN.md) is how the household uses Ano.
+- [Architecture](ARCHITECTURE.md) is how the programs and the packet path fit together.
+- [Ano.md](Ano.md) is the earlier plan.
 
 ## What the screen does
 
-Passive mode is the default. Ano records devices and stores the AI Inference suggestion. It does not enforce that suggestion. Active mode enforces **Refuse** and **Send**. A person's button overrides the model.
+The menu is Overview, Route, System, Devices, Admin, Decisions, Envoy, and Proxy. Ask Ano sits on every screen. Passive and Active sit in the menu. Speakers only stays on until it is turned off.
+
+Passive mode records devices and stores the model's suggestion. Active mode enforces Refuse and Send. A person's button overrides the model.
 
 Open a name and choose:
 
-- **Refuse.** Drop it. The name does not reach the router. Envoy answers 403 on this computer. On the Orange Pi, DNS answers NXDOMAIN and nftables drops the address.
-- **Send.** Let it go direct. It skips Ano and Envoy.
-- **Answer here.** This machine answers through Envoy. It does not call the vendor.
-- **Set aside.** Not a leak. Nothing is enforced.
+- **Refuse.** Drop that name. On this computer, Envoy answers 403. On the Orange Pi, with the gateway on, DNS answers NXDOMAIN and the kernel drops the address.
+- **Send.** Let it go direct.
+- **Answer here.** Envoy answers on Ano, or Proxy sends that name to another host. A local answer does not call the vendor.
+- **Set aside.** Leave it unenforced.
 
-The menu opens the overview, the route, the system page, each device, the decision log, Envoy, and the proxy map. Overview and each name show bytes that left versus bytes kept. Those counts move every two seconds. Speakers only stays on until you turn it off at the bottom of the menu.
+Admin sets the review schedule and the DNS drop list. The schedule can be every minute, hour, day, week, or month. The default is every day at 03:00. Each review reads the past 24 hours.
 
-A device line shows its type, IP address, and MAC address. Traffic shows the endpoint and port the packets are leaving to.
+Ask Ano takes a typed or spoken request. A complete request changes the mode, the schedule, a drop, a device choice, Speakers only, or the gateway. A greeting or a general question gets an answer. A half-finished request gets one question and the choices that fit.
 
 ## This computer
 
-This Mac is a development machine. It is a peer on the home network, not the gateway. The System page names the two ports it can see and leaves **Start the gateway** off. Starting it here is refused, and IP forwarding stays off.
-
-Outgoing packets from the televisions stay on the existing router. Ano on this Mac records conversations this computer already has with a device, such as Cast, AirPlay, and Sonos.
-
-## Run
-
-On a Mac, install Go, Node, and Envoy first: `brew install go node envoy`.
-
-In one terminal:
+Install Go, Node, and Envoy, then run the API and the screen:
 
 ```bash
-# Linux: download the Envoy binary once
-bash scripts/install-envoy.sh
-
-# macOS: brew install envoy
+brew install go node envoy
 # local model: ollama pull qwen2.5:0.5b && ollama serve
-HBAR_ENVOY_BIN=/opt/homebrew/bin/envoy go run ./cmd/hbar
+ANO_ENVOY_BIN=/opt/homebrew/bin/envoy go run ./cmd/ano
 ```
-
-In another:
 
 ```bash
 cd web
@@ -50,48 +44,53 @@ npm run dev
 
 Open [Ano](http://127.0.0.1:4317).
 
-The local model is Ollama with `qwen2.5:0.5b`. Override it with `HBAR_QWEN_URL` and `HBAR_QWEN_MODEL`. It runs when a card is created and returns a suggestion. It does not see each packet.
+The Mac model is Ollama with `qwen2.5:0.5b`. Override it with `ANO_LLM_URL`, `ANO_LLM_MODEL`, and `ANO_LLM_KIND`. The model runs on the schedule and when Ask Ano is used. It does not see each packet.
+
+Starting the gateway on this Mac is refused, and IP forwarding stays off. The System page leaves Start off.
 
 ## Orange Pi 6 Plus
 
-The always-on box is an Orange Pi 6 Plus: a 12-core ARM64 board with two RTL8126 5-gigabit Ethernet ports. Use the official Debian or Ubuntu image so both ports come up. Do not install Raspberry Pi OS.
+The always-on box is an Orange Pi 6 Plus: a 12-core ARM64 board with two RTL8126 5-gigabit Ethernet ports. Use the official Debian or Ubuntu image so both ports come up. Do not install Raspberry Pi OS. Linux names the ports from PCI addresses, so label them from `ip -4 addr` after the first boot.
 
-Wiring:
+Wiring, once both jacks are connected:
 
 ```text
-modem or existing router  --  router-side jack
-Orange Pi running Ano
-access-point-side jack  --  Wi-Fi access point  --  TVs, speakers, phones
+modem or existing router -- router-side jack
+Ano
+access-point-side jack -- Wi-Fi access point -- TVs, speakers, phones
 ```
 
-Put the Nest, or another access point, in access-point mode only. Its uplink cable goes to the access-point jack. The other jack goes to the current router. After the first boot, run `ip -4 addr` and label the jacks. Linux names them from PCI addresses, not from a fixed `eth0`.
+Put the access point in access-point mode. Its uplink goes to the access-point jack. The other jack goes to the current router.
 
-On the Pi, Ano forwards the home network out the router-side port, records each conversation from conntrack, and hands out DHCP and DNS with dnsmasq. Devices receive the Pi as their gateway and as their only DNS server. Streaming video and music stay forwarded. An approved refuse is NXDOMAIN plus an nftables drop, because televisions often skip DNS.
-
-Build the arm64 binary on this Mac, copy it to the Pi with `deploy/orangepi/`, then run the installer there as root:
+Build the arm64 binary on the Mac, copy the repository to the board, and run the installer there as root:
 
 ```bash
-GOOS=linux GOARCH=arm64 go build -o hbar ./cmd/hbar
-```
-
-```bash
+GOOS=linux GOARCH=arm64 go build -o ano ./cmd/ano
 sh deploy/orangepi/install.sh
 ```
 
-The installer adds nftables, conntrack, and dnsmasq, and enables `deploy/orangepi/ano.service`. Open the System page on the Pi and press **Start the gateway**. The on-board NPU is not used. The text model stays on the CPU.
+The installer adds nftables, conntrack, dnsmasq, and Envoy 1.40.2. It installs Ollama, pulls Llama 3.2 1B, builds the screen, and enables Ano, the screen, and the model. Those three start on boot and come back if they stop. Envoy is started by Ano. dnsmasq stays disabled until the gateway is turned on. The installer does not start the gateway.
+
+The screen listens on port 80. On the Pi, open [http://ano.home.security.ai/](http://ano.home.security.ai/). That name is written in the Pi's `/etc/hosts`, and Ano's DNS answers it for the home network when the gateway is on. This Mac does not use that name. Start the gateway from Admin only after the second Ethernet jack is up. With one network, Start stays disabled. The on-board NPU is not used.
 
 The board is powered by USB-C Power Delivery at 20 V. It is specified for a 100 W Type-C PD supply.
 
 ## Ports
 
-- Review screen: 4317
-- Go processor: 8647
-- Envoy: 10080
-- Envoy admin, local only: 19001
-- HTTP proxy for an added device: 10081
-- DNS relay: 10053
+| Service | Port |
+| --- | --- |
+| Review screen on Ano | 80 |
+| Review screen on this Mac, during development | 4317 |
+| Ano API | 8647 |
+| Envoy name check | 10080 |
+| Envoy TCP egress, including HTTPS | 10082 |
+| Envoy UDP egress, including QUIC | 10083 |
+| Envoy admin | 19001, localhost only |
+| Added-device HTTP proxy | 10081 |
+| DNS relay for that proxy path | 10053 |
+| Ollama | 11434, localhost only |
 
-SQLite lives at `data/ano.db` on this computer and `/var/lib/ano` on the Orange Pi. Go is the only writer.
+SQLite is `data/ano.db` on this computer and `/var/lib/ano/ano.db` on the Orange Pi. Ano is the only writer.
 
 ## Tests
 

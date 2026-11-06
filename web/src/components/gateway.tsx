@@ -58,11 +58,11 @@ export function GatewayPanel() {
     <section className="rounded-xl border bg-card px-4 py-4">
       <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Gateway</h2>
       <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-        The Orange Pi has two Ethernet jacks. The router side faces the existing router. The access-point side faces the Wi-Fi access point. A device uses Ano as its gateway. Ano records the address and port, then forwards the packet out the router-side jack.
+        Two Ethernet jacks. Router side faces the router. Access-point side faces Wi-Fi. Envoy carries traffic out. A refused endpoint is dropped.
       </p>
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <Port kicker="Router side" title={gate?.wan || "—"} detail={gate?.wanAddr || "No port yet"} />
-        <Port kicker="Ano" title="Records, then forwards" detail={gate?.lanAddr ? `Gateway ${gate.lanAddr}` : "Home gateway"} />
+        <Port kicker="Ano" title="Records after Envoy" detail={gate?.lanAddr ? `Gateway ${gate.lanAddr}` : "Home gateway"} />
         <Port kicker="Access point side" title={gate?.lan || "—"} detail={gate?.lanNet || "No separate network yet"} />
       </div>
       <p className="mt-3 max-w-3xl text-[13px] leading-5 text-muted-foreground">{gate?.detail || "Reading the ports."}</p>

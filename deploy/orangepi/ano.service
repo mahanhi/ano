@@ -1,13 +1,19 @@
 [Unit]
 Description=Ano gateway
-After=network-online.target
-Wants=network-online.target
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+StartLimitIntervalSec=0
 
 [Service]
 WorkingDirectory=/opt/ano
-Environment=HBAR_DATA=/var/lib/ano
-ExecStart=/opt/ano/hbar
-Restart=on-failure
+Environment=ANO_DATA=/var/lib/ano
+Environment=ANO_LLM_KIND=ollama
+Environment=ANO_LLM_URL=http://127.0.0.1:11434/v1
+Environment=ANO_LLM_MODEL=llama3.2:1b
+Environment=ANO_ENVOY_BIN=/usr/local/bin/envoy
+ExecStart=/opt/ano/ano
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

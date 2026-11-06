@@ -2,11 +2,82 @@ package gate
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+func publishScreen() {
+	ip := screenIPv4()
+	if ip == "" {
+		return
+	}
+	body, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return
+	}
+	next := hostsWithUI(string(body), ip)
+	if next != string(body) {
+		_ = os.WriteFile("/etc/hosts", []byte(next), 0o644)
+	}
+	writeScreenDNS(ip)
+}
+
+func writeScreenDNS(ip string) {
+	path := "/etc/dnsmasq.d/ano-ui.conf"
+	text := fmt.Sprintf("address=/%s/%s\n", UIHost, ip)
+	if _, err := os.Stat("/etc/dnsmasq.d/ano.conf"); err != nil {
+		text = ScreenDNS(ip)
+	}
+	old, _ := os.ReadFile(path)
+	if string(old) == text {
+		return
+	}
+	if err := os.MkdirAll("/etc/dnsmasq.d", 0o755); err != nil {
+		return
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return
+	}
+	_ = runRoot("systemctl enable dnsmasq; systemctl restart dnsmasq")
+}
+
+func screenIPv4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	var fallback string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipnet.IP.To4()
+			if ip == nil || !ip.IsGlobalUnicast() {
+				continue
+			}
+			if ip.IsPrivate() {
+				return ip.String()
+			}
+			if fallback == "" {
+				fallback = ip.String()
+			}
+		}
+	}
+	return fallback
+}
 
 func canApply() bool { return true }
 
@@ -24,7 +95,7 @@ func (s *Service) Enable() error {
 	s.on = true
 	s.plan = plan
 	s.saved = strings.TrimSpace(string(current))
-	s.detail = fmt.Sprintf("Forwarding %s from %s out %s.", plan.LANNet, plan.LAN, plan.WAN)
+	s.detail = fmt.Sprintf("Envoy carries TCP and UDP from %s. A refused endpoint is dropped for every protocol.", plan.LANNet)
 	s.mu.Unlock()
 	return nil
 }
@@ -39,6 +110,9 @@ func (s *Service) Disable() {
 	s.on = false
 	s.detail = "Ano is not the gateway."
 	s.mu.Unlock()
+	if ip := screenIPv4(); ip != "" {
+		_ = os.WriteFile("/etc/dnsmasq.d/ano-ui.conf", []byte(ScreenDNS(ip)), 0o644)
+	}
 	_ = runRoot(fmt.Sprintf("nft delete table inet ano; sysctl -w net.ipv4.ip_forward=%s; rm -f /etc/dnsmasq.d/ano.conf; systemctl try-restart dnsmasq", saved))
 }
 
@@ -59,7 +133,39 @@ func (s *Service) apply(plan Plan) error {
 	if err != nil {
 		return err
 	}
-	rules, err := RenderNFT(plan, ips)
+	blocks, err := s.store.Blocks()
+	if err != nil {
+		return err
+	}
+	covered := map[string]bool{}
+	for _, name := range names {
+		covered[name] = true
+	}
+	byPort := map[int][]string{}
+	for _, block := range blocks {
+		if block.Port == 0 {
+			if !covered[block.Name] {
+				names = append(names, block.Name)
+				covered[block.Name] = true
+			}
+			continue
+		}
+		if covered[block.Name] {
+			continue
+		}
+		byPort[block.Port] = append(byPort[block.Port], block.Name)
+	}
+	ips = uniqueIPs(append(ips, AddressesForNames(names)...))
+	var ports []PortDrop
+	for port, list := range byPort {
+		found := AddressesForNames(list)
+		if len(found) == 0 {
+			continue
+		}
+		ports = append(ports, PortDrop{Port: port, IPs: found})
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i].Port < ports[j].Port })
+	rules, err := RenderNFT(plan, ips, ports)
 	if err != nil {
 		return err
 	}
@@ -81,16 +187,13 @@ func (s *Service) apply(plan Plan) error {
 	if err := os.WriteFile(dhcpPath, []byte(dhcp), 0o644); err != nil {
 		return err
 	}
-	script := fmt.Sprintf("nft -f %s && sysctl -w net.ipv4.ip_forward=1 && install -D -m 644 %s /etc/dnsmasq.d/ano.conf && systemctl try-restart dnsmasq", quote(nftPath), quote(dhcpPath))
+	_ = os.WriteFile("/etc/dnsmasq.d/ano-ui.conf", []byte(fmt.Sprintf("address=/%s/%s\n", UIHost, plan.LANAddr)), 0o644)
+	script := fmt.Sprintf("nft -f %s && sysctl -w net.ipv4.ip_forward=1 && install -D -m 644 %s /etc/dnsmasq.d/ano.conf && systemctl restart dnsmasq", quote(nftPath), quote(dhcpPath))
 	return runRoot(script)
 }
 
 func readForwarded() (string, error) {
-	out, err := exec.Command("conntrack", "-L").CombinedOutput()
-	if err != nil && len(out) == 0 {
-		return "", err
-	}
-	return string(out), nil
+	return "", nil
 }
 
 func parseForwarded(text, lanNet string) []Flow {

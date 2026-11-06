@@ -85,7 +85,7 @@ export function RouteMap({
     <div className="space-y-3">
       {compact ? null : (
         <p className="max-w-2xl text-[13px] leading-5 text-muted-foreground">
-          Red stops inside Ano. Orange is still undecided and leaves. Green was allowed straight out. Blue goes through Envoy.
+          Red stops at Ano. Orange is undecided. Green is allowed. Blue goes through Envoy.
         </p>
       )}
       <div className="route-stage w-full rounded-xl border bg-muted/60 px-4 py-4 sm:px-5 sm:py-5">
@@ -94,7 +94,7 @@ export function RouteMap({
           <Flow colors={inbound} />
           <Pill title="Wi-Fi" detail="Access point" />
           <Flow colors={inbound} />
-          <div className="route-hbar min-w-0 rounded-xl border border-primary/30 bg-card px-3 py-2.5">
+          <div className="route-ano min-w-0 rounded-xl border border-primary/30 bg-card px-3 py-2.5">
             <p className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Ano</p>
             <Lane title="Drop" detail={namesOn(dropped, "None")} color="#F2495C" stop={dropped.length > 0} />
             <Lane title="Out" detail={namesOn(direct, "None")} color={direct.length ? directColor : "#5c6770"} />

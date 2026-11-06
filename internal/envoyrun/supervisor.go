@@ -3,15 +3,17 @@ package envoyrun
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
-	"github.com/hbar/hbar/internal/envoycfg"
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/envoycfg"
+	"github.com/ano/ano/internal/store"
 )
 
 // Supervisor writes the Envoy config from approved rules and keeps the process up.
@@ -60,13 +62,15 @@ func (s *Supervisor) reload() error {
 		ListenPort: 10080,
 		AdminPort:  19001,
 		AccessLog:  s.logPath,
+		Egress:     runtime.GOOS == "linux",
+		DropIPs:    dropIPs(routes),
 	}, cfgRoutes)
 	if err := os.WriteFile(s.cfgPath, []byte(body), 0o644); err != nil {
 		return err
 	}
 	s.stopLocked()
 	if s.bin == "" {
-		s.message = "Envoy binary not found. Install it and set HBAR_ENVOY_BIN."
+		s.message = "Envoy binary not found. Install it and set ANO_ENVOY_BIN."
 		return nil
 	}
 	cmd := exec.Command(s.bin, "-c", s.cfgPath, "--log-level", "warning")
@@ -150,8 +154,29 @@ func (s *Supervisor) stopLocked() {
 	s.done = nil
 }
 
+func dropIPs(routes []store.EnvoyRoute) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, route := range routes {
+		if route.Action != "drop" {
+			continue
+		}
+		host := route.Destination
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil || seen[ip.String()] {
+			continue
+		}
+		seen[ip.String()] = true
+		out = append(out, ip.String())
+	}
+	return out
+}
+
 func findBin() string {
-	if p := os.Getenv("HBAR_ENVOY_BIN"); p != "" {
+	if p := os.Getenv("ANO_ENVOY_BIN"); p != "" {
 		return p
 	}
 	for _, p := range []string{"/usr/local/bin/envoy", "/workspace/bin/envoy"} {

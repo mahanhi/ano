@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/ano/ano/internal/envoycfg"
 )
 
 // Iface is one port with an IPv4 address.
@@ -53,8 +55,9 @@ func ParseInterfaces(text string) []Iface {
 		if len(fields) < 4 || fields[0] != "inet" || fields[2] != "netmask" || name == "" {
 			continue
 		}
+		ip := net.ParseIP(fields[1])
 		cidr, err := network(fields[1], fields[3])
-		if err != nil || net.ParseIP(fields[1]) == nil {
+		if err != nil || ip == nil || ip.IsLoopback() || name == "lo" || name == "lo0" {
 			continue
 		}
 		out = append(out, Iface{Name: name, Addr: fields[1], CIDR: cidr})
@@ -104,9 +107,15 @@ func RenderNAT(plan Plan) (string, error) {
 		plan.WAN, plan.LANNet, plan.WAN, plan.WAN, plan.LANNet), nil
 }
 
-// RenderNFT is the Linux forward rule for the Orange Pi. The two ports have
+// PortDrop refuses one outside address on a single port.
+type PortDrop struct {
+	Port int
+	IPs  []string
+}
+
+// RenderNFT is the Linux forward rule for Ano. The two ports have
 // to differ. Dropped addresses are refused. There is no route-to.
-func RenderNFT(plan Plan, drops []string) (string, error) {
+func RenderNFT(plan Plan, drops []string, ports []PortDrop) (string, error) {
 	if err := checkPlan(plan); err != nil {
 		return "", err
 	}
@@ -125,11 +134,33 @@ func RenderNFT(plan Plan, drops []string) (string, error) {
 		b.WriteString(strings.Join(ips, ", "))
 		b.WriteString(" }\n  }\n")
 	}
+	b.WriteString("  chain prerouting {\n    type nat hook prerouting priority dstnat; policy accept;\n")
+	if len(ips) > 0 {
+		fmt.Fprintf(&b, "    iifname %q ip daddr @drop4 drop\n", plan.LAN)
+	}
+	for _, drop := range ports {
+		if drop.Port < 1 || drop.Port > 65535 || len(drop.IPs) == 0 {
+			return "", fmt.Errorf("drop port %d", drop.Port)
+		}
+		var addrs []string
+		for _, raw := range drop.IPs {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip == nil || ip.To4() == nil {
+				return "", fmt.Errorf("drop address %s", raw)
+			}
+			addrs = append(addrs, ip.String())
+		}
+		fmt.Fprintf(&b, "    iifname %q ip daddr { %s } meta l4proto { tcp, udp } th dport %d drop\n", plan.LAN, strings.Join(addrs, ", "), drop.Port)
+	}
+	fmt.Fprintf(&b, "    iifname %q meta l4proto { tcp, udp } th dport { 53, 853 } ip daddr != %s drop\n", plan.LAN, plan.LANNet)
+	fmt.Fprintf(&b, "    iifname %q meta l4proto tcp ip daddr != %s ip daddr != 255.255.255.255 ip daddr != 224.0.0.0/4 redirect to :%d\n", plan.LAN, plan.LANNet, envoycfg.EgressPort)
+	fmt.Fprintf(&b, "    iifname %q meta l4proto udp ip daddr != %s ip daddr != 255.255.255.255 ip daddr != 224.0.0.0/4 redirect to :%d\n  }\n", plan.LAN, plan.LANNet, envoycfg.EgressUDPPort)
 	b.WriteString("  chain forward {\n    type filter hook forward priority filter; policy accept;\n")
 	if len(ips) > 0 {
 		b.WriteString("    ip daddr @drop4 drop\n")
 	}
-	fmt.Fprintf(&b, "    iifname %q oifname %q accept\n", plan.LAN, plan.WAN)
+	fmt.Fprintf(&b, "    iifname %q oifname %q meta l4proto icmp accept\n", plan.LAN, plan.WAN)
+	fmt.Fprintf(&b, "    iifname %q oifname %q drop\n", plan.LAN, plan.WAN)
 	fmt.Fprintf(&b, "    iifname %q oifname %q ct state established,related accept\n", plan.WAN, plan.LAN)
 	b.WriteString("  }\n  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	fmt.Fprintf(&b, "    oifname %q ip saddr %s masquerade\n", plan.WAN, plan.LANNet)
@@ -137,8 +168,12 @@ func RenderNFT(plan Plan, drops []string) (string, error) {
 	return b.String(), nil
 }
 
+// UIHost is the name the home network uses for the Ano screen.
+const UIHost = "ano.home.security.ai"
+
 // RenderDHCP hands the home port out as the gateway and the only DNS server.
 // names are refused with NXDOMAIN. The router-side port is not served.
+// The screen name answers with the home address.
 func RenderDHCP(plan Plan, names []string) (string, error) {
 	if err := checkPlan(plan); err != nil {
 		return "", err
@@ -155,12 +190,47 @@ func RenderDHCP(plan Plan, names []string) (string, error) {
 	b.WriteString("no-resolv\nserver=1.1.1.1\n")
 	for _, name := range names {
 		clean := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if clean == UIHost {
+			continue
+		}
 		if !safeName(clean) {
 			return "", fmt.Errorf("drop name %s", name)
 		}
 		fmt.Fprintf(&b, "address=/%s/\n", clean)
 	}
+	fmt.Fprintf(&b, "address=/%s/%s\n", UIHost, plan.LANAddr)
 	return b.String(), nil
+}
+
+// ScreenDNS is the dnsmasq file for the screen name. It does not hand out addresses.
+func ScreenDNS(ip string) string {
+	return fmt.Sprintf("bind-interfaces\nlisten-address=%s\nexcept-interface=lo\nno-dhcp-interface=*\nno-resolv\nserver=1.1.1.1\naddress=/%s/%s\n", ip, UIHost, ip)
+}
+
+// hostsWithUI returns /etc/hosts with one line for the Ano screen.
+func hostsWithUI(body, ip string) string {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim != "" && !strings.HasPrefix(trim, "#") && hostField(trim, UIHost) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	for len(kept) > 0 && kept[len(kept)-1] == "" {
+		kept = kept[:len(kept)-1]
+	}
+	return strings.Join(kept, "\n") + "\n" + ip + " " + UIHost + "\n"
+}
+
+func hostField(line, host string) bool {
+	fields := strings.Fields(line)
+	for _, field := range fields[1:] {
+		if field == host {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseIPAddr reads `ip -4 addr` text into ports that have an IPv4 address.
@@ -183,7 +253,7 @@ func ParseIPAddr(text string) []Iface {
 			continue
 		}
 		ip, network, err := net.ParseCIDR(fields[1])
-		if err != nil || ip.To4() == nil {
+		if err != nil || ip.To4() == nil || ip.IsLoopback() || name == "lo" {
 			continue
 		}
 		out = append(out, Iface{Name: name, Addr: ip.To4().String(), CIDR: network.String()})

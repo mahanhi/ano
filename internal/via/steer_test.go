@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 func TestRunSteerStaysOff(t *testing.T) {
@@ -16,7 +16,7 @@ func TestRunSteerStaysOff(t *testing.T) {
 }
 
 func TestBackgroundDoesNotUseNohup(t *testing.T) {
-	got := background("'/tmp/hbar-steer' '/tmp/via-steer.json'", "/tmp/via steer.log")
+	got := background("'/tmp/ano-steer' '/tmp/via-steer.json'", "/tmp/via steer.log")
 	if strings.Contains(got, "nohup") || !strings.Contains(got, "trap '' HUP") || !strings.Contains(got, "'/tmp/via steer.log'") {
 		t.Fatal(got)
 	}

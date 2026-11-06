@@ -1,11 +1,11 @@
 {
-  "name": "hbar-web",
+  "name": "ano-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "node scripts/ipv6-proxy.mjs & next dev -p 4317 -H 0.0.0.0",
     "build": "next build",
-    "start": "next start -p 4317 -H 0.0.0.0",
+    "start": "next start -p 80 -H 0.0.0.0",
     "lint": "eslint"
   },
   "dependencies": {

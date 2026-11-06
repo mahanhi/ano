@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hbar/hbar/internal/store"
+	"github.com/ano/ano/internal/store"
 )
 
 // Proxy accepts HTTP proxy traffic from devices added in the UI.

@@ -11,17 +11,18 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/hbar/hbar/internal/agent"
-	"github.com/hbar/hbar/internal/envoyrun"
-	"github.com/hbar/hbar/internal/gate"
-	"github.com/hbar/hbar/internal/lan"
-	"github.com/hbar/hbar/internal/llm"
-	"github.com/hbar/hbar/internal/store"
-	"github.com/hbar/hbar/internal/via"
+	"github.com/ano/ano/internal/agent"
+	"github.com/ano/ano/internal/chat"
+	"github.com/ano/ano/internal/envoyrun"
+	"github.com/ano/ano/internal/gate"
+	"github.com/ano/ano/internal/lan"
+	"github.com/ano/ano/internal/llm"
+	"github.com/ano/ano/internal/store"
+	"github.com/ano/ano/internal/via"
 )
 
 func main() {
-	dataDir := os.Getenv("HBAR_DATA")
+	dataDir := os.Getenv("ANO_DATA")
 	if dataDir == "" {
 		dataDir = "data"
 	}
@@ -40,6 +41,7 @@ func main() {
 	defer path.Stop()
 	gateway := gate.Start(st, dataDir)
 	go gateway.Loop()
+	go gate.Follow(st, filepath.Join(dataDir, "envoy-access.log"))
 	withVia := func(view store.AdminView) store.AdminView {
 		status := path.Status()
 		view.ViaAddr = viaAddr
@@ -65,9 +67,25 @@ func main() {
 	go ag.Loop(context.Background())
 	go watchNetwork(st, path)
 
+	talk := &chat.Service{Store: st, Agent: ag, Model: ag.Model, Apply: reload, Gate: gateway}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true", "product": "Ano"})
+	})
+	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("send a request"))
+			return
+		}
+		reply, err := talk.Ask(r.Context(), body.Text)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, reply)
 	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		speakerOnly, err := st.SpeakerOnly()
@@ -109,6 +127,7 @@ func main() {
 			"envoy":     envoy.Status(),
 			"agent":     ag.Snapshot(),
 			"via":       viaStatus(viaAddr, path),
+			"addr":      lan.ScreenAddr(),
 		})
 	})
 	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +158,84 @@ func main() {
 		mode, _ := st.Mode()
 		only, _ := st.SpeakerOnly()
 		writeJSON(w, http.StatusOK, map[string]any{"speakerOnly": only, "mode": mode, "agent": ag.Snapshot()})
+	})
+	mux.HandleFunc("POST /api/admin/review-schedule", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			On       *bool   `json:"on"`
+			Every    *int    `json:"every"`
+			Unit     *string `json:"unit"`
+			Hour     *int    `json:"hour"`
+			Minute   *int    `json:"minute"`
+			Weekday  *int    `json:"weekday"`
+			MonthDay *int    `json:"monthDay"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.On == nil || body.Every == nil || body.Unit == nil || body.Hour == nil || body.Minute == nil || body.Weekday == nil || body.MonthDay == nil {
+			writeErr(w, http.StatusBadRequest, errors.New("send the schedule"))
+			return
+		}
+		if err := st.SetReviewSchedule(*body.On, *body.Every, *body.Unit, *body.Hour, *body.Minute, *body.Weekday, *body.MonthDay); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		view, err := st.AdminView()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"admin": withVia(view), "envoy": envoy.Status()})
+	})
+	mux.HandleFunc("GET /api/admin/blocks", func(w http.ResponseWriter, r *http.Request) {
+		drops, err := st.DropNames()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"drops": drops})
+	})
+	mux.HandleFunc("POST /api/admin/blocks", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name string `json:"name"`
+			Port int    `json:"port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		drops, err := st.AddBlock(body.Name, body.Port)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := reload(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"drops": drops})
+	})
+	mux.HandleFunc("DELETE /api/admin/blocks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		drops, err := st.DeleteBlock(r.PathValue("id"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := reload(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"drops": drops})
+	})
+	mux.HandleFunc("POST /api/admin/review", func(w http.ResponseWriter, r *http.Request) {
+		n, err := ag.Daily(r.Context())
+		view, viewErr := st.AdminView()
+		if viewErr != nil {
+			writeErr(w, http.StatusInternalServerError, viewErr)
+			return
+		}
+		if err != nil && n == 0 {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"admin": withVia(view), "error": err.Error(), "reviewed": n})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"admin": withVia(view), "reviewed": n, "envoy": envoy.Status()})
 	})
 	mux.HandleFunc("POST /api/agent/review", func(w http.ResponseWriter, r *http.Request) {
 		n, err := ag.Review(r.Context())
@@ -371,10 +468,10 @@ func main() {
 		n, _ := resp.Body.Read(buf)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": resp.StatusCode,
-			"action": resp.Header.Get("x-hbar-action"),
+			"action": resp.Header.Get("x-ano-action"),
 			"body":   string(buf[:n]),
 		})
-		if resp.Header.Get("x-hbar-action") == "drop" {
+		if resp.Header.Get("x-ano-action") == "drop" {
 			_ = st.NoteBlocked(body.Host)
 		}
 	})
