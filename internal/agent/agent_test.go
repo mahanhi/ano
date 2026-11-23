@@ -96,3 +96,46 @@ func TestDueRunsOnceAfterTheConfiguredTime(t *testing.T) {
 		t.Fatal("month schedule")
 	}
 }
+
+func TestActiveModeDropsASelfSignedCertificate(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "ano.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.ConnectRouter("192.168.86.1", "Wi-Fi", []store.LANNeighbor{{
+		Name: "Hall phone", Addr: "192.168.86.40", MAC: "02:00:00:00:00:40", Kind: "phone",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteForward(store.ForwardNote{Addr: "192.168.86.40", Remote: "198.51.100.8", Port: 443, Protocol: "HTTPS", Bytes: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TagActivity("198.51.100.8:443", "router.home", true); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := 0
+	ag := &Agent{Store: st, OnEnforce: func() error {
+		reloaded++
+		return nil
+	}}
+	if err := ag.SetMode("active"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := ag.DropBareCertificates()
+	if err != nil || n != 1 || reloaded != 2 {
+		t.Fatalf("dropped %d reloads %d err %v", n, reloaded, err)
+	}
+	cards, err := st.Cards(false)
+	if err != nil || len(cards) != 1 || cards[0].Suggestion != "drop" || cards[0].Status != "approved" || cards[0].Action != "drop" {
+		t.Fatalf("card %+v %v", cards, err)
+	}
+	routes, err := st.EnvoyRoutes()
+	if err != nil || len(routes) != 1 || routes[0].Destination != "198.51.100.8:443" || routes[0].Action != "drop" {
+		t.Fatalf("routes %+v %v", routes, err)
+	}
+	n, err = ag.DropBareCertificates()
+	if err != nil || n != 0 || reloaded != 2 {
+		t.Fatalf("second pass %d reloads %d err %v", n, reloaded, err)
+	}
+}

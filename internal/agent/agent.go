@@ -154,6 +154,17 @@ func (a *Agent) judge(ctx context.Context, items []store.ReviewItem, daily bool)
 	n := 0
 	var last error
 	for _, item := range items {
+		if item.Category != "stream" {
+			kind, kindErr := a.Store.CertificateKind(item.ID)
+			if kindErr == nil && !store.MailDestination(item.Destination) && (kind == "self-signed" || kind == "none") {
+				if err := a.Store.RecordVerdict(item.ID, "drop", bareReason(kind), mode == "active"); err != nil {
+					last = err
+					continue
+				}
+				n++
+				continue
+			}
+		}
 		verdict, err := a.Model.Decide(ctx, llm.Brief{
 			DeviceName:  item.DeviceName,
 			Kind:        item.Kind,
@@ -332,6 +343,58 @@ func (a *Agent) SetMode(mode string) error {
 	return nil
 }
 
+// ApplyNames copies a drop or allow from an endpoint name onto addresses that now use that name.
+func (a *Agent) ApplyNames() (int, error) {
+	n, err := a.Store.ApplyNameRules()
+	if err != nil || n == 0 || a.OnEnforce == nil {
+		return n, err
+	}
+	if err := a.OnEnforce(); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// DropBareCertificates suggests drop for a self-signed certificate or no certificate, and enforces it in active mode.
+func (a *Agent) DropBareCertificates() (int, error) {
+	mode, err := a.Store.Mode()
+	if err != nil {
+		return 0, err
+	}
+	released, err := a.Store.ReleaseMailDrops()
+	if err != nil {
+		return 0, err
+	}
+	items, err := a.Store.BareCertificates()
+	if err != nil {
+		return released, err
+	}
+	enforce := mode == "active"
+	n := released
+	for _, item := range items {
+		if !enforce && item.Suggestion == "drop" {
+			continue
+		}
+		if err := a.Store.RecordVerdict(item.ID, "drop", bareReason(item.Kind), enforce); err != nil {
+			return n, err
+		}
+		n++
+	}
+	if n > 0 && enforce && a.OnEnforce != nil {
+		if err := a.OnEnforce(); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func bareReason(kind string) string {
+	if kind == "self-signed" {
+		return "Self-signed certificate. AI Inference suggests drop."
+	}
+	return "No certificate. AI Inference suggests drop."
+}
+
 // Loop collects on a short tick and asks AI Inference once each day.
 func (a *Agent) Loop(ctx context.Context) {
 	collect := time.NewTicker(2 * time.Second)
@@ -340,6 +403,9 @@ func (a *Agent) Loop(ctx context.Context) {
 	defer day.Stop()
 	_ = a.Store.Collect()
 	a.observe()
+	_, _ = a.Store.NameMail()
+	_, _ = a.DropBareCertificates()
+	_, _ = a.ApplyNames()
 	a.maybeDaily(ctx)
 	for {
 		select {
@@ -348,7 +414,10 @@ func (a *Agent) Loop(ctx context.Context) {
 		case <-collect.C:
 			_ = a.Store.Collect()
 			a.observe()
+			_, _ = a.ApplyNames()
 		case <-day.C:
+			_, _ = a.Store.NameMail()
+			_, _ = a.DropBareCertificates()
 			a.maybeDaily(ctx)
 		}
 	}

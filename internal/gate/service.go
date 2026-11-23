@@ -19,6 +19,7 @@ type Service struct {
 	detail string
 	plan   Plan
 	prev   map[string]int
+	local  map[string]int
 	saved  string
 }
 
@@ -39,7 +40,9 @@ type Status struct {
 // On Ano it also records the screen name in /etc/hosts.
 func Start(st *store.Store, dir string) *Service {
 	publishScreen()
-	return &Service{store: st, dir: dir, detail: "Ano is not the gateway yet."}
+	s := &Service{store: st, dir: dir, detail: "Ano is not the gateway yet."}
+	s.attachRunning()
+	return s
 }
 
 // Status reports the modem port, the home port, and whether forwarding is on.
@@ -62,6 +65,25 @@ func (s *Service) Status() Status {
 		}
 	}
 	return Status{On: s.on, Ready: ready, CanStart: canApply() && ready && !s.on, Detail: detail, WAN: plan.WAN, WANAddr: plan.WANAddr, LAN: plan.LAN, LANAddr: plan.LANAddr, LANNet: plan.LANNet}
+}
+
+// Live returns internet conversations that are open now. Collected history stays in the store.
+func (s *Service) Live() []Flow {
+	s.mu.Lock()
+	netw := s.plan.LANNet
+	s.mu.Unlock()
+	if netw == "" {
+		plan, err := inspect()
+		if err != nil {
+			return nil
+		}
+		netw = plan.LANNet
+	}
+	text, err := readConntrack()
+	if err != nil || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return ActiveFlows(text, netw)
 }
 
 // Collect records new forwarded bytes. It does nothing until the gateway is on.
@@ -99,7 +121,38 @@ func (s *Service) Collect() error {
 	s.mu.Lock()
 	s.prev = next
 	s.mu.Unlock()
+	s.recordLocal(plan.LANNet)
 	return nil
+}
+
+// recordLocal saves multicast and broadcast conversations. They stay on the LAN, so Envoy never writes a card for them.
+func (s *Service) recordLocal(lanNet string) {
+	text, err := readConntrack()
+	if err != nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	next := map[string]int{}
+	for _, flow := range parseForwarded(text, lanNet) {
+		if !staysOnTheLAN(flow.Dst) {
+			continue
+		}
+		key := flow.Proto + " " + flow.Src + " " + flow.Dst + " " + fmt.Sprint(flow.Port)
+		next[key] = flow.Bytes
+		s.mu.Lock()
+		old, seen := s.local[key]
+		s.mu.Unlock()
+		delta := flow.Bytes - old
+		if !seen || delta < 0 {
+			delta = flow.Bytes
+		}
+		if delta <= 0 {
+			continue
+		}
+		_ = s.store.NoteForward(store.ForwardNote{Addr: flow.Src, Remote: flow.Dst, Port: flow.Port, Protocol: flow.Proto, Bytes: delta})
+	}
+	s.mu.Lock()
+	s.local = next
+	s.mu.Unlock()
 }
 
 // Loop collects while the process is up.

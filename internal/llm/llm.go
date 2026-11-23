@@ -122,6 +122,7 @@ Judge only this device.`, brief.DeviceName, brief.Kind, brief.Room, brief.Destin
 const systemPrompt = `You are Ano. Infer drop or allow for this one home device from its own past 24 hours of send times. You do not see packet contents. Another device's sends are not this device's.
 Drop a name that, like other names of the same kind on this device, goes out on a steady automatic timer across many hours.
 Allow a name that sends rarely, in a few clusters, and not on that same timer.
+A self-signed certificate, or a destination that presented no certificate, is drop.
 Return JSON with keys action, reason, cadence, sendTime, similar, protocol.
 action is drop or allow.
 reason names the device, the destination, and the inference.

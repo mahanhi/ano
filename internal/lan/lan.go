@@ -2,7 +2,6 @@
 package lan
 
 import (
-	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -38,40 +37,9 @@ var (
 	ifaceRE = regexp.MustCompile(`(?m)^\s*interface:\s+(\S+)`)
 )
 
-// Inspect asks the operating system for the Wi-Fi router, the wired link, and the devices on them.
+// Inspect asks the operating system for the home port and the devices on it.
 func Inspect() (Snapshot, error) {
-	routeOut, err := exec.Command("route", "-n", "get", "default").CombinedOutput()
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("could not read the home router: %s", strings.TrimSpace(string(routeOut)))
-	}
-	arpOut, err := exec.Command("arp", "-a").CombinedOutput()
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("could not read devices on the home network: %s", strings.TrimSpace(string(arpOut)))
-	}
-	route := Parse(string(routeOut), "")
-	links := []Link{{Iface: route.Iface, Router: route.Router, Room: "Ethernet"}}
-	if wifi, ok := wifiLink(); ok && wifi.Iface != "" && wifi.Iface != route.Iface {
-		links = append(links, wifi)
-	} else if ok && wifi.Iface == route.Iface {
-		links[0].Room = "Wi-Fi"
-	}
-	if route.Router == "" && (len(links) == 0 || links[0].Router == "") {
-		return Snapshot{}, fmt.Errorf("this computer has no route to a home router")
-	}
-	neighbors := NeighborsOn(string(arpOut), links)
-	neighbors = Merge(neighbors, discover(links))
-	snap := Snapshot{Neighbors: neighbors}
-	for _, link := range links {
-		if link.Room == "Wi-Fi" && link.Router != "" {
-			snap.Router = link.Router
-			snap.Iface = "Wi-Fi"
-		}
-	}
-	if snap.Router == "" {
-		snap.Router = route.Router
-		snap.Iface = route.Iface
-	}
-	return snap, nil
+	return inspectHost()
 }
 
 // Parse splits route and arp text into a router and the devices on that link.
@@ -148,6 +116,77 @@ func skipAddr(addr string) bool {
 		return true
 	}
 	return first >= 224
+}
+
+// ParseNeigh reads `ip neigh` lines that have a hardware address.
+func ParseNeigh(text string) []Neighbor {
+	var out []Neighbor
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || fields[3] != "lladdr" {
+			continue
+		}
+		addr := fields[0]
+		mac, ok := CanonicalMAC(fields[4])
+		if !ok || skipAddr(addr) || seen[mac] {
+			continue
+		}
+		state := strings.ToUpper(fields[len(fields)-1])
+		if state == "FAILED" || state == "INCOMPLETE" {
+			continue
+		}
+		seen[mac] = true
+		out = append(out, Neighbor{Addr: addr, MAC: mac, Kind: "unknown", Room: "Home"})
+	}
+	return out
+}
+
+// ParseLeases reads a dnsmasq lease file. A star hostname is left blank.
+func ParseLeases(text string) []Neighbor {
+	var out []Neighbor
+	seen := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		mac, ok := CanonicalMAC(fields[1])
+		addr := fields[2]
+		if !ok || skipAddr(addr) || seen[mac] {
+			continue
+		}
+		seen[mac] = true
+		name := fields[3]
+		if name == "*" {
+			name = ""
+		}
+		out = append(out, Neighbor{Name: name, Addr: addr, MAC: mac, Kind: KindOf(name), Room: "Home"})
+	}
+	return out
+}
+
+func mergeLeaseNames(neighbors, leases []Neighbor) []Neighbor {
+	byMAC := map[string]int{}
+	byAddr := map[string]int{}
+	for i, neighbor := range neighbors {
+		byMAC[neighbor.MAC] = i
+		byAddr[neighbor.Addr] = i
+	}
+	for _, lease := range leases {
+		if i, ok := byMAC[lease.MAC]; ok {
+			if lease.Name != "" {
+				neighbors[i].Name = lease.Name
+				neighbors[i].Kind = preferKind(neighbors[i].Kind, KindOf(lease.Name))
+			}
+			continue
+		}
+		if _, ok := byAddr[lease.Addr]; ok {
+			continue
+		}
+		neighbors = append(neighbors, lease)
+	}
+	return neighbors
 }
 
 // NeighborsOn keeps devices on the given links and skips each link's router.

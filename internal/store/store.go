@@ -58,6 +58,7 @@ type Card struct {
 	Reroute      string  `json:"reroute"`
 	LlmAction    string  `json:"llmAction"`
 	LlmReason    string  `json:"llmReason"`
+	SelfSigned   bool    `json:"selfSigned"`
 	Observations int     `json:"observations"`
 	Metrics      Metrics `json:"metrics"`
 }
@@ -149,6 +150,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.backfillHistory(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -226,6 +231,9 @@ CREATE TABLE IF NOT EXISTS samples (
 	if err := s.ensureColumn("rules", "reroute_host", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.ensureColumn("rules", "cert_kind", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	for _, col := range []struct{ name, decl string }{
 		{"llm_action", "TEXT NOT NULL DEFAULT ''"},
 		{"llm_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -237,6 +245,9 @@ CREATE TABLE IF NOT EXISTS samples (
 		}
 	}
 	if err := s.ensureColumn("settings", "mode", "TEXT NOT NULL DEFAULT 'passive'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("settings", "drops_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn("patterns", "protocol", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -297,6 +308,21 @@ CREATE TABLE IF NOT EXISTS sends (
 )`); err != nil {
 		return err
 	}
+	if _, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS history (
+  pattern_id TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  device_name TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  kept INTEGER NOT NULL,
+  sends INTEGER NOT NULL,
+  refused INTEGER NOT NULL,
+  PRIMARY KEY (pattern_id, bucket)
+);
+CREATE INDEX IF NOT EXISTS history_destination ON history(destination, bucket)`); err != nil {
+		return err
+	}
 	if err := s.ensureColumn("observations", "protocol", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -308,6 +334,15 @@ CREATE TABLE IF NOT EXISTS sends (
   name TEXT NOT NULL,
   port INTEGER NOT NULL,
   UNIQUE(name, port)
+)`); err != nil {
+		return err
+	}
+	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS name_rules (
+  name TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL
 )`); err != nil {
 		return err
 	}
@@ -452,6 +487,27 @@ func (s *Store) seed() error {
 		}
 	}
 	return s.logLocked("Kitchen speaker", "device-metrics-us.amazon.com", "suggested", "The advisor opened a usage-report card. Nothing is dropped until you choose.")
+}
+
+// DropsEnabled reports the master switch. Off lets traffic through and leaves saved choices in place.
+func (s *Store) DropsEnabled() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var v int
+	err := s.db.QueryRow(`SELECT drops_enabled FROM settings WHERE id = 1`).Scan(&v)
+	return v != 0, err
+}
+
+// SetDropsEnabled stores the master switch. It does not change a saved drop or allow.
+func (s *Store) SetDropsEnabled(on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE settings SET drops_enabled = ? WHERE id = 1`, v)
+	return err
 }
 
 // SpeakerOnly reports the review filter.
@@ -633,9 +689,10 @@ FROM patterns p
 JOIN devices d ON d.id = p.device_id
 JOIN rules r ON r.pattern_id = p.id
 WHERE r.source != 'customer'
-AND p.category NOT IN ('seen', 'stream')
+AND p.category != 'stream'
 AND (r.llm_at = '' OR p.observations >= r.llm_lookups + ?)
-ORDER BY p.id`, minNew)
+ORDER BY CASE WHEN r.llm_at = '' THEN 0 ELSE 1 END, CASE WHEN p.category = 'seen' THEN 1 ELSE 0 END, p.bytes_out DESC
+LIMIT 24`, minNew)
 	if err != nil {
 		return nil, err
 	}
@@ -669,13 +726,14 @@ FROM patterns p
 JOIN devices d ON d.id = p.device_id
 JOIN rules r ON r.pattern_id = p.id
 WHERE r.source != 'customer'
-AND p.category NOT IN ('seen', 'stream', 'outbound')
+AND p.category NOT IN ('stream', 'outbound')
 AND EXISTS (
   SELECT 1 FROM sends s
   WHERE s.device_id = p.device_id AND s.destination = p.destination AND s.at >= ?
 )
 AND (r.llm_at = '' OR r.llm_at < ?)
-ORDER BY p.id`, since.UTC().Format(time.RFC3339), startOfDay.UTC().Format(time.RFC3339))
+ORDER BY CASE WHEN p.category = 'seen' THEN 1 ELSE 0 END, p.bytes_out DESC
+LIMIT 24`, since.UTC().Format(time.RFC3339), startOfDay.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
@@ -786,8 +844,9 @@ func (s *Store) Collect() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`
-SELECT p.id, p.device_id, p.destination, p.protocol, r.status, r.action, p.observations, p.bytes_out, p.per_lookup_bytes
+SELECT p.id, p.device_id, d.name, p.destination, p.protocol, r.status, r.action, p.observations, p.bytes_out, p.per_lookup_bytes
 FROM patterns p
+JOIN devices d ON d.id = p.device_id
 JOIN rules r ON r.pattern_id = p.id
 WHERE p.category NOT IN ('seen', 'stream', 'outbound')`)
 	if err != nil {
@@ -795,13 +854,13 @@ WHERE p.category NOT IN ('seen', 'stream', 'outbound')`)
 	}
 	defer rows.Close()
 	type tick struct {
-		id, deviceID, dest, protocol, status, action string
-		lookups, bytes, per                          int
+		id, deviceID, deviceName, dest, protocol, status, action string
+		lookups, bytes, per                                      int
 	}
 	var items []tick
 	for rows.Next() {
 		var item tick
-		if err := rows.Scan(&item.id, &item.deviceID, &item.dest, &item.protocol, &item.status, &item.action, &item.lookups, &item.bytes, &item.per); err != nil {
+		if err := rows.Scan(&item.id, &item.deviceID, &item.deviceName, &item.dest, &item.protocol, &item.status, &item.action, &item.lookups, &item.bytes, &item.per); err != nil {
 			return err
 		}
 		items = append(items, item)
@@ -809,13 +868,19 @@ WHERE p.category NOT IN ('seen', 'stream', 'outbound')`)
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	nowTime := time.Now().UTC()
+	now := nowTime.Format(time.RFC3339Nano)
 	for _, item := range items {
 		if item.status == "approved" && item.action == "drop" {
 			if _, err := s.db.Exec(`UPDATE patterns SET after_lookups = after_lookups + 1, after_bytes = after_bytes + per_lookup_bytes WHERE id = ?`, item.id); err != nil {
 				return err
 			}
+			if err := s.recordHistoryLocked(item.id, item.dest, item.deviceName, nowTime, 0, item.per, 0, 1); err != nil {
+				return err
+			}
 		} else if _, err := s.db.Exec(`UPDATE patterns SET observations = observations + 1, bytes_out = bytes_out + per_lookup_bytes WHERE id = ?`, item.id); err != nil {
+			return err
+		} else if err := s.recordHistoryLocked(item.id, item.dest, item.deviceName, nowTime, item.per, 0, 1, 0); err != nil {
 			return err
 		}
 		lookups := item.lookups + 1
@@ -1450,6 +1515,11 @@ func (s *Store) NoteFlows(notes []FlowNote) error {
 			now.Format(time.RFC3339), patternID, note.Service, deviceName, bytesOut, observations); err != nil {
 			return err
 		}
+		if note.Delta > 0 {
+			if err = s.recordHistoryLocked(patternID, note.Service, deviceName, now, note.Delta, 0, 1, 0); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -1536,7 +1606,10 @@ func (s *Store) EnvoyRoutes() ([]EnvoyRoute, error) {
 SELECT p.destination, r.action, r.reroute_host
 FROM rules r
 JOIN patterns p ON p.id = r.pattern_id
-WHERE r.status = 'approved' AND r.action IN ('drop', 'allow_envoy') AND p.category NOT IN ('seen', 'stream')
+WHERE r.status = 'approved' AND (
+  (r.action IN ('drop', 'allow_envoy') AND p.category NOT IN ('seen', 'stream'))
+  OR (r.action = 'drop' AND p.category = 'seen')
+)
 ORDER BY p.destination`)
 	if err != nil {
 		return nil, err
@@ -1556,9 +1629,7 @@ ORDER BY p.destination`)
 // Decide records the household choice and makes it the live rule.
 func (s *Store) Decide(patternID, action string) (Card, error) {
 	var category string
-	if err := s.db.QueryRow(`SELECT category FROM patterns WHERE id = ?`, patternID).Scan(&category); err == nil && category == "seen" {
-		return Card{}, errors.New("Ano recorded this traffic, and it is not a name Ano can refuse")
-	}
+	_ = s.db.QueryRow(`SELECT category FROM patterns WHERE id = ?`, patternID).Scan(&category)
 	if category == "stream" {
 		return Card{}, errors.New("streaming stays on the direct path")
 	}
@@ -1767,7 +1838,7 @@ WHERE r.status = 'approved'`)
 const cardColumns = `p.id, p.device_id, d.name, d.room, d.kind, d.addr, d.mac, p.destination, p.port, p.category, p.protocol,
        r.activity, r.sentence, r.consequence, r.suggestion, r.status, r.action,
        p.evidence, r.source, r.reroute_host, r.llm_action, r.llm_reason, p.observations, p.bytes_out, p.every_seconds, p.per_lookup_bytes,
-       p.before_lookups, p.before_bytes, p.after_lookups, p.after_bytes`
+       p.before_lookups, p.before_bytes, p.after_lookups, p.after_bytes, r.cert_kind`
 
 func (s *Store) cardByIDLocked(id string) (Card, error) {
 	row := s.db.QueryRow(`
@@ -1924,16 +1995,41 @@ func (s *Store) NoteBlocked(host string) error {
 	host = normalizeHost(host)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
-UPDATE patterns
-SET after_lookups = after_lookups + 1,
-    after_bytes = after_bytes + per_lookup_bytes
-WHERE destination = ?
-AND EXISTS (
-  SELECT 1 FROM rules
-  WHERE rules.pattern_id = patterns.id AND rules.status = 'approved' AND rules.action = 'drop'
-)`, host)
-	return err
+	rows, err := s.db.Query(`
+SELECT p.id, p.destination, d.name, p.per_lookup_bytes
+FROM patterns p
+JOIN devices d ON d.id = p.device_id
+JOIN rules r ON r.pattern_id = p.id
+WHERE p.destination = ? AND r.status = 'approved' AND r.action = 'drop'`, host)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type blocked struct {
+		id, dest, name string
+		per            int
+	}
+	var items []blocked
+	for rows.Next() {
+		var item blocked
+		if err := rows.Scan(&item.id, &item.dest, &item.name, &item.per); err != nil {
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		if _, err := s.db.Exec(`UPDATE patterns SET after_lookups = after_lookups + 1, after_bytes = after_bytes + per_lookup_bytes WHERE id = ?`, item.id); err != nil {
+			return err
+		}
+		if err := s.recordHistoryLocked(item.id, item.dest, item.name, now, 0, item.per, 0, 1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type scanner interface {
@@ -1943,10 +2039,12 @@ type scanner interface {
 func scanCard(row scanner) (Card, error) {
 	var c Card
 	var bytesOut, every, per, beforeLookups, beforeBytes, afterLookups, afterBytes int
-	err := row.Scan(&c.ID, &c.DeviceID, &c.DeviceName, &c.Room, &c.Kind, &c.Addr, &c.MAC, &c.Destination, &c.Port, &c.Category, &c.Protocol, &c.Activity, &c.Sentence, &c.Consequence, &c.Suggestion, &c.Status, &c.Action, &c.Evidence, &c.Source, &c.Reroute, &c.LlmAction, &c.LlmReason, &c.Observations, &bytesOut, &every, &per, &beforeLookups, &beforeBytes, &afterLookups, &afterBytes)
+	var certKind string
+	err := row.Scan(&c.ID, &c.DeviceID, &c.DeviceName, &c.Room, &c.Kind, &c.Addr, &c.MAC, &c.Destination, &c.Port, &c.Category, &c.Protocol, &c.Activity, &c.Sentence, &c.Consequence, &c.Suggestion, &c.Status, &c.Action, &c.Evidence, &c.Source, &c.Reroute, &c.LlmAction, &c.LlmReason, &c.Observations, &bytesOut, &every, &per, &beforeLookups, &beforeBytes, &afterLookups, &afterBytes, &certKind)
 	if err != nil {
 		return Card{}, err
 	}
+	c.SelfSigned = certKind == "self-signed"
 	dropped := c.Status == "approved" && c.Action == "drop"
 	c.Metrics.EverySeconds = every
 	c.Metrics.Dropped = dropped

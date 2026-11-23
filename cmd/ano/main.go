@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/ano/ano/internal/agent"
+	"github.com/ano/ano/internal/certname"
 	"github.com/ano/ano/internal/chat"
 	"github.com/ano/ano/internal/envoyrun"
 	"github.com/ano/ano/internal/gate"
@@ -42,6 +45,7 @@ func main() {
 	gateway := gate.Start(st, dataDir)
 	go gateway.Loop()
 	go gate.Follow(st, filepath.Join(dataDir, "envoy-access.log"))
+	go certname.Watch(context.Background(), st)
 	withVia := func(view store.AdminView) store.AdminView {
 		status := path.Status()
 		view.ViaAddr = viaAddr
@@ -118,29 +122,50 @@ func main() {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		drops, err := st.DropsEnabled()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"settings":  map[string]any{"speakerOnly": speakerOnly, "mode": mode},
+			"settings":  map[string]any{"speakerOnly": speakerOnly, "mode": mode, "drops": drops},
 			"cards":     cards,
 			"devices":   devices,
 			"decisions": decisions,
 			"series":    series,
+			"live":      liveConns(gateway.Live()),
 			"envoy":     envoy.Status(),
 			"agent":     ag.Snapshot(),
 			"via":       viaStatus(viaAddr, path),
 			"addr":      lan.ScreenAddr(),
 		})
 	})
+	mux.HandleFunc("GET /api/history", func(w http.ResponseWriter, r *http.Request) {
+		var rows []store.Sample
+		var err error
+		if r.URL.Query().Get("names") == "1" {
+			rows, err = st.HistoryNames(r.URL.Query().Get("device"), r.URL.Query().Get("from"), r.URL.Query().Get("to"))
+		} else {
+			rows, err = st.History(r.URL.Query().Get("destination"), r.URL.Query().Get("pattern"), r.URL.Query().Get("device"))
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	})
 	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			SpeakerOnly *bool   `json:"speakerOnly"`
 			Mode        *string `json:"mode"`
+			Drops       *bool   `json:"drops"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if body.SpeakerOnly == nil && body.Mode == nil {
-			writeErr(w, http.StatusBadRequest, errors.New("send speakerOnly or mode"))
+		if body.SpeakerOnly == nil && body.Mode == nil && body.Drops == nil {
+			writeErr(w, http.StatusBadRequest, errors.New("send speakerOnly, mode, or drops"))
 			return
 		}
 		if body.SpeakerOnly != nil {
@@ -155,9 +180,20 @@ func main() {
 				return
 			}
 		}
+		if body.Drops != nil {
+			if err := st.SetDropsEnabled(*body.Drops); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+			if err := reload(); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
 		mode, _ := st.Mode()
 		only, _ := st.SpeakerOnly()
-		writeJSON(w, http.StatusOK, map[string]any{"speakerOnly": only, "mode": mode, "agent": ag.Snapshot()})
+		drops, _ := st.DropsEnabled()
+		writeJSON(w, http.StatusOK, map[string]any{"speakerOnly": only, "mode": mode, "drops": drops, "agent": ag.Snapshot()})
 	})
 	mux.HandleFunc("POST /api/admin/review-schedule", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -248,6 +284,29 @@ func main() {
 			detail = err.Error()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"reviewed": n, "agent": ag.Snapshot(), "error": detail})
+	})
+	mux.HandleFunc("POST /api/names/decide", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name   string `json:"name"`
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if body.Action == "allow" {
+			body.Action = "allow_direct"
+		}
+		n, err := st.DecideName(body.Name, body.Action)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := reload(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"name": body.Name, "action": body.Action, "applied": n, "envoy": envoy.Status()})
 	})
 	mux.HandleFunc("POST /api/cards/{id}/decide", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -507,6 +566,26 @@ func watchNetwork(st *store.Store, path *via.Service) {
 		}
 		time.Sleep(45 * time.Second)
 	}
+}
+
+type liveConn struct {
+	Addr        string `json:"addr"`
+	Destination string `json:"destination"`
+	Protocol    string `json:"protocol"`
+	Bytes       int    `json:"bytes"`
+}
+
+func liveConns(flows []gate.Flow) []liveConn {
+	out := make([]liveConn, 0, len(flows))
+	for _, flow := range flows {
+		out = append(out, liveConn{
+			Addr:        flow.Src,
+			Destination: net.JoinHostPort(flow.Dst, strconv.Itoa(flow.Port)),
+			Protocol:    flow.Proto,
+			Bytes:       flow.Bytes,
+		})
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

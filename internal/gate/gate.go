@@ -78,7 +78,7 @@ func Choose(ifaces []Iface, wanName string) (Plan, error) {
 	}
 	var lan *Iface
 	for i := range ifaces {
-		if ifaces[i].Name == wan.Name || ifaces[i].CIDR == wan.CIDR {
+		if ifaces[i].Name == wan.Name || ifaces[i].CIDR == wan.CIDR || virtualIface(ifaces[i].Name) {
 			continue
 		}
 		if lan == nil || privateRank(ifaces[i].Addr) > privateRank(lan.Addr) {
@@ -171,23 +171,14 @@ func RenderNFT(plan Plan, drops []string, ports []PortDrop) (string, error) {
 // UIHost is the name the home network uses for the Ano screen.
 const UIHost = "ano.home.security.ai"
 
-// RenderDHCP hands the home port out as the gateway and the only DNS server.
-// names are refused with NXDOMAIN. The router-side port is not served.
-// The screen name answers with the home address.
+// RenderDHCP adds DNS answers only. The home DHCP server stays in the
+// administrator's dnsmasq.conf. Refused names are NXDOMAIN. The screen name
+// answers with the home address.
 func RenderDHCP(plan Plan, names []string) (string, error) {
 	if err := checkPlan(plan); err != nil {
 		return "", err
 	}
-	start, end, err := dhcpRange(plan.LANNet, plan.LANAddr)
-	if err != nil {
-		return "", err
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "interface=%s\nbind-interfaces\nexcept-interface=%s\n", plan.LAN, plan.WAN)
-	fmt.Fprintf(&b, "dhcp-range=%s,%s,12h\n", start, end)
-	fmt.Fprintf(&b, "dhcp-option=option:router,%s\n", plan.LANAddr)
-	fmt.Fprintf(&b, "dhcp-option=option:dns-server,%s\n", plan.LANAddr)
-	b.WriteString("no-resolv\nserver=1.1.1.1\n")
 	for _, name := range names {
 		clean := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 		if clean == UIHost {
@@ -198,13 +189,13 @@ func RenderDHCP(plan Plan, names []string) (string, error) {
 		}
 		fmt.Fprintf(&b, "address=/%s/\n", clean)
 	}
-	fmt.Fprintf(&b, "address=/%s/%s\n", UIHost, plan.LANAddr)
+	b.WriteString(ScreenDNS(plan.LANAddr))
 	return b.String(), nil
 }
 
-// ScreenDNS is the dnsmasq file for the screen name. It does not hand out addresses.
+// ScreenDNS is the dnsmasq line for the screen name. It does not hand out addresses.
 func ScreenDNS(ip string) string {
-	return fmt.Sprintf("bind-interfaces\nlisten-address=%s\nexcept-interface=lo\nno-dhcp-interface=*\nno-resolv\nserver=1.1.1.1\naddress=/%s/%s\n", ip, UIHost, ip)
+	return fmt.Sprintf("address=/%s/%s\n", UIHost, ip)
 }
 
 // hostsWithUI returns /etc/hosts with one line for the Ano screen.
@@ -274,7 +265,46 @@ func ParseDefaultDev(text string) string {
 	return ""
 }
 
-var connLine = regexp.MustCompile(`\b(tcp|udp)\b.*?\bsrc=([0-9.]+) dst=([0-9.]+) sport=\d+ dport=(\d+)(?: .*?)? bytes=(\d+)`)
+var connLine = regexp.MustCompile(`\b(tcp|udp)\b.*?\bsrc=([0-9.]+) dst=([0-9.]+) sport=\d+ dport=(\d+)`)
+var connBytes = regexp.MustCompile(`\bbytes=(\d+)`)
+
+// ActiveFlows keeps conversations that are open now. A finished TCP state is collected history, not a live connection.
+func ActiveFlows(text, lanNet string) []Flow {
+	var open strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if openConn(line) {
+			open.WriteString(line)
+			open.WriteByte('\n')
+		}
+	}
+	return ParseConntrack(open.String(), lanNet)
+}
+
+func openConn(line string) bool {
+	lower := strings.ToLower(line)
+	if !strings.Contains(lower, "src=") {
+		return false
+	}
+	for _, done := range []string{"time_wait", "close_wait", "fin_wait", "last_ack", "syn_sent", "syn_recv", " close "} {
+		if strings.Contains(lower, done) {
+			return false
+		}
+	}
+	tcp := strings.Contains(lower, " tcp ") || strings.HasPrefix(strings.TrimSpace(lower), "tcp ")
+	if tcp && !strings.Contains(lower, "established") {
+		return false
+	}
+	return true
+}
+
+// staysOnTheLAN is multicast or broadcast. Those packets are not sent to Envoy, so they need their own record.
+func staysOnTheLAN(dst string) bool {
+	ip := net.ParseIP(dst)
+	if ip == nil {
+		return false
+	}
+	return ip.IsMulticast() || ip.Equal(net.IPv4bcast)
+}
 
 // ParseConntrack reads conntrack lines and keeps conversations that start in the home network.
 func ParseConntrack(text, lanNet string) []Flow {
@@ -284,21 +314,29 @@ func ParseConntrack(text, lanNet string) []Flow {
 	}
 	var out []Flow
 	for _, line := range strings.Split(text, "\n") {
-		m := connLine.FindStringSubmatch(line)
-		if m == nil {
+		loc := connLine.FindStringSubmatchIndex(line)
+		if loc == nil {
 			continue
 		}
+		m := connLine.FindStringSubmatch(line)
 		src := net.ParseIP(m[2])
 		dst := net.ParseIP(m[3])
 		if src == nil || dst == nil || !ipnet.Contains(src) || ipnet.Contains(dst) {
 			continue
 		}
 		port, err := strconv.Atoi(m[4])
-		bytes, err2 := strconv.Atoi(m[5])
-		if err != nil || err2 != nil || port < 1 || port > 65535 || bytes < 0 {
+		if err != nil || port < 1 || port > 65535 {
 			continue
 		}
-		out = append(out, Flow{Src: src.String(), Dst: dst.String(), Port: port, Proto: strings.ToUpper(m[1]), Bytes: bytes})
+		rest := line[loc[1]:]
+		if cut := strings.Index(rest, " src="); cut >= 0 {
+			rest = rest[:cut]
+		}
+		n := 0
+		if b := connBytes.FindStringSubmatch(rest); b != nil {
+			n, _ = strconv.Atoi(b[1])
+		}
+		out = append(out, Flow{Src: src.String(), Dst: dst.String(), Port: port, Proto: strings.ToUpper(m[1]), Bytes: n})
 	}
 	return out
 }
@@ -314,36 +352,6 @@ func checkPlan(plan Plan) error {
 		return fmt.Errorf("router-side address %s", plan.WANAddr)
 	}
 	return nil
-}
-
-func dhcpRange(cidr, self string) (string, string, error) {
-	ip, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil || ip.To4() == nil {
-		return "", "", fmt.Errorf("home network %s", cidr)
-	}
-	base := ip.Mask(ipnet.Mask).To4()
-	start := addHost(base, 50)
-	end := addHost(base, 200)
-	if !ipnet.Contains(start) || !ipnet.Contains(end) {
-		return "", "", fmt.Errorf("home network %s is too small", cidr)
-	}
-	selfIP := net.ParseIP(self).To4()
-	if selfIP != nil && selfIP.Equal(start) {
-		start = addHost(base, 51)
-	}
-	return start.String(), end.String(), nil
-}
-
-func addHost(base net.IP, n int) net.IP {
-	out := make(net.IP, len(base))
-	copy(out, base)
-	v := int(out[3]) + n
-	out[3] = byte(v)
-	if v > 255 {
-		out[2] += byte(v >> 8)
-		out[3] = byte(v)
-	}
-	return out
 }
 
 func safeName(name string) bool {
@@ -409,6 +417,15 @@ func network(addr, mask string) (string, error) {
 	}
 	n := ip.Mask(net.CIDRMask(ones, 32))
 	return fmt.Sprintf("%s/%d", n.String(), ones), nil
+}
+
+func virtualIface(name string) bool {
+	switch {
+	case name == "docker0" || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "virbr"):
+		return true
+	default:
+		return false
+	}
 }
 
 func privateRank(addr string) int {

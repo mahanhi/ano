@@ -398,3 +398,85 @@ func TestDailyReviewUsesThePastDayAndKeepsTheSchedule(t *testing.T) {
 		t.Fatalf("admin %+v %v", view, err)
 	}
 }
+
+func TestSeenTrafficCanBeDroppedAndReviewed(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`INSERT INTO devices (id, name, kind, room, addr, mac) VALUES ('dev-mini', 'Mini', 'computer', 'Home', '192.168.11.133', '18:4a:53:04:e7:8d')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NoteForward(ForwardNote{Addr: "192.168.11.133", Remote: "1.2.3.4", Port: 443, Protocol: "TCP", Bytes: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	var id, category, suggestion string
+	if err := s.db.QueryRow(`SELECT p.id, p.category, r.suggestion FROM patterns p JOIN rules r ON r.pattern_id = p.id`).Scan(&id, &category, &suggestion); err != nil {
+		t.Fatal(err)
+	}
+	if category != "seen" || suggestion != "" {
+		t.Fatalf("category %s suggestion %q", category, suggestion)
+	}
+	pending, err := s.Pending(1)
+	if err != nil || len(pending) != 1 || pending[0].ID != id {
+		t.Fatalf("pending %+v %v", pending, err)
+	}
+	if _, err := s.Decide(id, "allow_direct"); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := s.EnvoyRoutes()
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("allow should not drop, %+v %v", routes, err)
+	}
+	if _, err := s.Decide(id, "drop"); err != nil {
+		t.Fatal(err)
+	}
+	routes, err = s.EnvoyRoutes()
+	if err != nil || len(routes) != 1 || routes[0].Destination != "1.2.3.4:443" || routes[0].Action != "drop" {
+		t.Fatalf("drop route %+v %v", routes, err)
+	}
+}
+
+func TestMasterSwitchLeavesSavedDropsInPlace(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ano.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	on, err := s.DropsEnabled()
+	if err != nil || !on {
+		t.Fatalf("drops start on: %v %v", on, err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO devices (id, name, kind, room, addr, mac) VALUES ('dev-mini', 'Mini', 'computer', 'Home', '192.168.11.133', '18:4a:53:04:e7:8d')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NoteForward(ForwardNote{Addr: "192.168.11.133", Remote: "1.2.3.4", Port: 443, Protocol: "TCP", Bytes: 100}); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := s.db.QueryRow(`SELECT id FROM patterns`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(id, "drop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDropsEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	on, err = s.DropsEnabled()
+	if err != nil || on {
+		t.Fatalf("drops off: %v %v", on, err)
+	}
+	routes, err := s.EnvoyRoutes()
+	if err != nil || len(routes) != 1 || routes[0].Action != "drop" {
+		t.Fatalf("saved drop %+v %v", routes, err)
+	}
+	if err := s.SetDropsEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	on, err = s.DropsEnabled()
+	if err != nil || !on {
+		t.Fatalf("drops on again: %v %v", on, err)
+	}
+}

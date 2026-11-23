@@ -25,6 +25,10 @@ func (s *Service) Disable() {
 // Refresh is a no-op on macOS.
 func (s *Service) Refresh() error { return nil }
 
+func readConntrack() (string, error) { return "", nil }
+
+func (s *Service) attachRunning() {}
+
 func readForwarded() (string, error) {
 	out, err := exec.Command("pfctl", "-s", "state", "-v").CombinedOutput()
 	if err != nil {

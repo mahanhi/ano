@@ -160,9 +160,15 @@ func (s *Store) NoteVia(note ViaNote) error {
 	if note.Refused {
 		refused = 1
 	}
-	_, err = s.db.Exec(`INSERT INTO samples (at, pattern_id, destination, device_name, left_bytes, kept_bytes, lookups, refused) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		now.Format(time.RFC3339), patternID, note.Host, deviceName, bytesOut, afterBytes, observations, refused)
-	return err
+	if _, err = s.db.Exec(`INSERT INTO samples (at, pattern_id, destination, device_name, left_bytes, kept_bytes, lookups, refused) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		now.Format(time.RFC3339), patternID, note.Host, deviceName, bytesOut, afterBytes, observations, refused); err != nil {
+		return err
+	}
+	left, kept, sends := note.Bytes, 0, 1
+	if note.Refused {
+		left, kept, sends, refused = 0, note.Bytes, 0, 1
+	}
+	return s.recordHistoryLocked(patternID, note.Host, deviceName, now, left, kept, sends, refused)
 }
 
 // ViaTarget is one device a person added so its traffic can go through Ano.

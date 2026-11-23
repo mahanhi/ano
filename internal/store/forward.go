@@ -46,6 +46,10 @@ func (s *Store) NoteForward(note ForwardNote) error {
 		return err
 	}
 	evidence := fmt.Sprintf("Ano forwarded this from %s to %s.", deviceName, dest)
+	activity := dest
+	if note.Port == 993 {
+		activity = "Mail"
+	}
 	sum := sha256.Sum256([]byte(deviceID + "\n" + dest))
 	patternID := "fwd-" + hex.EncodeToString(sum[:12])
 	var observations, bytesOut int
@@ -56,7 +60,7 @@ func (s *Store) NoteForward(note ForwardNote) error {
 			return err
 		}
 		if _, err = s.db.Exec(`INSERT INTO rules (id, pattern_id, action, status, source, sentence, consequence, suggestion, activity) VALUES (?, ?, 'ignore', 'suggested', 'gate', ?, ?, '', ?)`,
-			newID(), patternID, evidence, "Ano recorded the forward. The packet already went to the modem.", dest); err != nil {
+			newID(), patternID, evidence, "Ano recorded the forward. The packet already went to the modem.", activity); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -81,7 +85,9 @@ func (s *Store) NoteForward(note ForwardNote) error {
 			return err
 		}
 	}
-	_, err = s.db.Exec(`INSERT INTO samples (at, pattern_id, destination, device_name, left_bytes, kept_bytes, lookups, refused) VALUES (?, ?, ?, ?, ?, 0, ?, 0)`,
-		now.Format(time.RFC3339), patternID, dest, deviceName, bytesOut, observations)
-	return err
+	if _, err = s.db.Exec(`INSERT INTO samples (at, pattern_id, destination, device_name, left_bytes, kept_bytes, lookups, refused) VALUES (?, ?, ?, ?, ?, 0, ?, 0)`,
+		now.Format(time.RFC3339), patternID, dest, deviceName, bytesOut, observations); err != nil {
+		return err
+	}
+	return s.recordHistoryLocked(patternID, dest, deviceName, now, note.Bytes, 0, 1, 0)
 }

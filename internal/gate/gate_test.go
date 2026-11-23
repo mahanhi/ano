@@ -67,23 +67,35 @@ func TestRenderNFTForwardsTwoPortsAndDropsAnAddress(t *testing.T) {
 	}
 }
 
+func TestChooseSkipsTheDockerPort(t *testing.T) {
+	ifaces := []Iface{
+		{Name: "enp97s0", Addr: "10.0.0.6", CIDR: "10.0.0.0/24"},
+		{Name: "docker0", Addr: "172.17.0.1", CIDR: "172.17.0.0/16"},
+		{Name: "enp49s0", Addr: "192.168.11.1", CIDR: "192.168.11.0/24"},
+	}
+	plan, err := Choose(ifaces, "enp97s0")
+	if err != nil || plan.LAN != "enp49s0" || plan.LANAddr != "192.168.11.1" {
+		t.Fatalf("%v %+v", err, plan)
+	}
+}
+
 func TestRenderDHCPKeepsTheRouterPortOut(t *testing.T) {
 	plan := Plan{WAN: "enp1s0", WANAddr: "10.0.0.35", LAN: "enP2p1s0", LANAddr: "192.168.50.1", LANNet: "192.168.50.0/24"}
 	text, err := RenderDHCP(plan, []string{"Device-Metrics.Example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "interface=enP2p1s0") || !strings.Contains(text, "except-interface=enp1s0") || !strings.Contains(text, "dhcp-option=option:router,192.168.50.1") || !strings.Contains(text, "address=/device-metrics.example.com/") || !strings.Contains(text, "address=/ano.home.security.ai/192.168.50.1") || strings.Contains(text, "192.168.50.1,") {
+	if !strings.Contains(text, "address=/device-metrics.example.com/") || !strings.Contains(text, "address=/ano.home.security.ai/192.168.50.1") {
 		t.Fatal(text)
 	}
-	if strings.Contains(text, "dhcp-range=192.168.50.1,") {
+	if strings.Contains(text, "dhcp-range") || strings.Contains(text, "dhcp-option") || strings.Contains(text, "no-dhcp-interface") || strings.Contains(text, "interface=") {
 		t.Fatal(text)
 	}
 }
 
 func TestScreenDNSAnswersThePiOnly(t *testing.T) {
 	text := ScreenDNS("10.0.0.6")
-	if !strings.Contains(text, "listen-address=10.0.0.6") || !strings.Contains(text, "address=/ano.home.security.ai/10.0.0.6") || !strings.Contains(text, "no-dhcp-interface=*") {
+	if text != "address=/ano.home.security.ai/10.0.0.6\n" || strings.Contains(text, "no-dhcp-interface") || strings.Contains(text, "dhcp-range") {
 		t.Fatal(text)
 	}
 }
@@ -127,5 +139,37 @@ func TestParseIPAddrAndConntrack(t *testing.T) {
 	got := ParseConntrack(text, plan.LANNet)
 	if len(got) != 1 || got[0].Src != "192.168.50.57" || got[0].Port != 443 || got[0].Bytes != 2000 {
 		t.Fatalf("flows %+v", got)
+	}
+}
+
+func TestActiveFlowsDropsFinishedTCP(t *testing.T) {
+	text := "tcp 6 100 ESTABLISHED src=192.168.50.57 dst=3.3.3.3 sport=50000 dport=443 packets=4 bytes=2000 src=3.3.3.3 dst=192.168.50.1 sport=443 dport=50000 packets=2 bytes=100\n" +
+		"tcp 6 20 TIME_WAIT src=192.168.50.57 dst=8.8.8.8 sport=50001 dport=443 packets=4 bytes=900 src=8.8.8.8 dst=192.168.50.1 sport=443 dport=50001 packets=2 bytes=100\n" +
+		"udp 17 20 src=192.168.50.57 dst=1.1.1.1 sport=41000 dport=53 packets=1 bytes=60 src=1.1.1.1 dst=192.168.50.1 sport=53 dport=41000 packets=1 bytes=80\n"
+	got := ActiveFlows(text, "192.168.50.0/24")
+	if len(got) != 2 {
+		t.Fatalf("open flows %+v", got)
+	}
+	if got[0].Dst != "3.3.3.3" || got[1].Dst != "1.1.1.1" {
+		t.Fatalf("open flows %+v", got)
+	}
+}
+
+func TestActiveFlowsKeepsAConnectionWithoutByteCounters(t *testing.T) {
+	text := "ipv4     2 tcp      6 424854 ESTABLISHED src=192.168.11.133 dst=142.250.141.109 sport=55887 dport=993 src=142.250.141.109 dst=10.0.0.6 sport=993 dport=55887 [ASSURED] mark=0 zone=0 use=2\n"
+	got := ActiveFlows(text, "192.168.11.0/24")
+	if len(got) != 1 || got[0].Dst != "142.250.141.109" || got[0].Port != 993 || got[0].Bytes != 0 {
+		t.Fatalf("open flows %+v", got)
+	}
+}
+
+func TestMulticastStaysOnTheLAN(t *testing.T) {
+	if !staysOnTheLAN("224.0.0.251") || !staysOnTheLAN("255.255.255.255") || staysOnTheLAN("1.2.3.4") || staysOnTheLAN("192.168.11.1") {
+		t.Fatal("local destinations")
+	}
+	text := "ipv4     2 udp      17 10 src=192.168.11.133 dst=224.0.0.251 sport=5353 dport=5353 src=224.0.0.251 dst=192.168.11.133 sport=5353 dport=5353 [ASSURED] mark=0 zone=0 use=2\n"
+	got := ActiveFlows(text, "192.168.11.0/24")
+	if len(got) != 1 || got[0].Dst != "224.0.0.251" || got[0].Port != 5353 || !staysOnTheLAN(got[0].Dst) {
+		t.Fatalf("mdns %+v", got)
 	}
 }

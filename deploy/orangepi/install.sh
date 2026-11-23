@@ -26,7 +26,6 @@ fi
 systemctl stop ano-web ano 2>/dev/null || true
 apt-get update
 apt-get install -y nftables conntrack dnsmasq curl ca-certificates
-systemctl disable --now dnsmasq || true
 if ! command -v ollama >/dev/null 2>&1; then
   curl -fsSL https://ollama.com/install.sh | sh
 fi
@@ -68,7 +67,11 @@ install -m 644 "$root/deploy/orangepi/ano.service" /etc/systemd/system/ano.servi
 install -m 644 "$root/deploy/orangepi/ano-web.service" /etc/systemd/system/ano-web.service
 # Screen name for this Pi only. The address is whatever this board has now.
 ui_name=ano.home.security.ai
-ui_ip=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+wan=$(ip route show default | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+ui_ip=$(ip -4 -o addr show scope global | awk -v wan="$wan" '$2 != wan { print $4 }' | cut -d/ -f1 | head -n 1)
+if [ -z "$ui_ip" ]; then
+  ui_ip=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+fi
 if [ -n "$ui_ip" ]; then
   tmp=$(mktemp)
   if [ -f /etc/hosts ]; then
@@ -78,17 +81,10 @@ if [ -n "$ui_ip" ]; then
   cat "$tmp" > /etc/hosts
   rm -f "$tmp"
   install -d /etc/dnsmasq.d
-  cat > /etc/dnsmasq.d/ano-ui.conf << EOF
-bind-interfaces
-listen-address=${ui_ip}
-except-interface=lo
-no-dhcp-interface=*
-no-resolv
-server=1.1.1.1
-address=/${ui_name}/${ui_ip}
-EOF
+  printf 'address=/%s/%s\n' "$ui_name" "$ui_ip" > /etc/dnsmasq.d/ano-ui.conf
+  dnsmasq --test
   systemctl enable dnsmasq
-  systemctl restart dnsmasq
+  systemctl reload dnsmasq || systemctl restart dnsmasq
 fi
 systemctl daemon-reload
 systemctl enable --now ano ano-web ollama

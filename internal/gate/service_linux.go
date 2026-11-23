@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/ano/ano/internal/store"
 )
 
 func publishScreen() {
@@ -28,10 +30,7 @@ func publishScreen() {
 
 func writeScreenDNS(ip string) {
 	path := "/etc/dnsmasq.d/ano-ui.conf"
-	text := fmt.Sprintf("address=/%s/%s\n", UIHost, ip)
-	if _, err := os.Stat("/etc/dnsmasq.d/ano.conf"); err != nil {
-		text = ScreenDNS(ip)
-	}
+	text := ScreenDNS(ip)
 	old, _ := os.ReadFile(path)
 	if string(old) == text {
 		return
@@ -42,7 +41,7 @@ func writeScreenDNS(ip string) {
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		return
 	}
-	_ = runRoot("systemctl enable dnsmasq; systemctl restart dnsmasq")
+	reloadDNS()
 }
 
 func screenIPv4() string {
@@ -50,7 +49,8 @@ func screenIPv4() string {
 	if err != nil {
 		return ""
 	}
-	var fallback string
+	wan := defaultDev()
+	var home, onWAN, fallback string
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
@@ -68,15 +68,48 @@ func screenIPv4() string {
 			if ip == nil || !ip.IsGlobalUnicast() {
 				continue
 			}
-			if ip.IsPrivate() {
-				return ip.String()
+			if !ip.IsPrivate() {
+				if fallback == "" {
+					fallback = ip.String()
+				}
+				continue
 			}
-			if fallback == "" {
-				fallback = ip.String()
+			if iface.Name == wan || virtualIface(iface.Name) {
+				if onWAN == "" {
+					onWAN = ip.String()
+				}
+				continue
+			}
+			if home == "" {
+				home = ip.String()
 			}
 		}
 	}
+	if home != "" {
+		return home
+	}
+	if onWAN != "" {
+		return onWAN
+	}
 	return fallback
+}
+
+func defaultDev() string {
+	out, err := exec.Command("ip", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	for i, field := range fields {
+		if field == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+func reloadDNS() {
+	_ = runRoot("dnsmasq --test && { systemctl enable dnsmasq; systemctl reload dnsmasq || systemctl restart dnsmasq; }")
 }
 
 func canApply() bool { return true }
@@ -113,7 +146,7 @@ func (s *Service) Disable() {
 	if ip := screenIPv4(); ip != "" {
 		_ = os.WriteFile("/etc/dnsmasq.d/ano-ui.conf", []byte(ScreenDNS(ip)), 0o644)
 	}
-	_ = runRoot(fmt.Sprintf("nft delete table inet ano; sysctl -w net.ipv4.ip_forward=%s; rm -f /etc/dnsmasq.d/ano.conf; systemctl try-restart dnsmasq", saved))
+	_ = runRoot(fmt.Sprintf("nft delete table inet ano; sysctl -w net.ipv4.ip_forward=%s; rm -f /etc/dnsmasq.d/ano.conf; dnsmasq --test && { systemctl reload dnsmasq || systemctl try-restart dnsmasq; }", saved))
 }
 
 // Refresh rewrites the rules after a person changes a decision.
@@ -129,13 +162,21 @@ func (s *Service) Refresh() error {
 }
 
 func (s *Service) apply(plan Plan) error {
-	ips, names, err := targets(s.store)
+	dropsOn, err := s.store.DropsEnabled()
 	if err != nil {
 		return err
 	}
-	blocks, err := s.store.Blocks()
-	if err != nil {
-		return err
+	var ips, names []string
+	var blocks []store.DropName
+	if dropsOn {
+		ips, names, err = targets(s.store)
+		if err != nil {
+			return err
+		}
+		blocks, err = s.store.Blocks()
+		if err != nil {
+			return err
+		}
 	}
 	covered := map[string]bool{}
 	for _, name := range names {
@@ -188,12 +229,46 @@ func (s *Service) apply(plan Plan) error {
 		return err
 	}
 	_ = os.WriteFile("/etc/dnsmasq.d/ano-ui.conf", []byte(fmt.Sprintf("address=/%s/%s\n", UIHost, plan.LANAddr)), 0o644)
-	script := fmt.Sprintf("nft -f %s && sysctl -w net.ipv4.ip_forward=1 && install -D -m 644 %s /etc/dnsmasq.d/ano.conf && systemctl restart dnsmasq", quote(nftPath), quote(dhcpPath))
+	script := fmt.Sprintf("nft delete table inet ano; nft -f %s && sysctl -w net.ipv4.ip_forward=1 && install -D -m 644 %s /etc/dnsmasq.d/ano.conf && dnsmasq --test && { systemctl reload dnsmasq || systemctl restart dnsmasq; }", quote(nftPath), quote(dhcpPath))
 	return runRoot(script)
 }
 
 func readForwarded() (string, error) {
 	return "", nil
+}
+
+func readConntrack() (string, error) {
+	_ = os.WriteFile("/proc/sys/net/netfilter/nf_conntrack_acct", []byte("1\n"), 0o644)
+	body, err := os.ReadFile("/proc/net/nf_conntrack")
+	if err == nil {
+		return string(body), nil
+	}
+	out, cmdErr := exec.Command("conntrack", "-L").CombinedOutput()
+	if cmdErr != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// attachRunning keeps collecting after a restart when the gateway rules are already loaded.
+// It rewrites those rules once so a decision saved before the restart is what the firewall enforces.
+func (s *Service) attachRunning() {
+	out, err := exec.Command("nft", "list", "table", "inet", "ano").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ano") {
+		return
+	}
+	plan, err := inspect()
+	if err != nil {
+		return
+	}
+	current, _ := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	s.on = true
+	s.plan = plan
+	s.saved = strings.TrimSpace(string(current))
+	s.detail = fmt.Sprintf("Envoy carries TCP and UDP from %s. A refused endpoint is dropped for every protocol.", plan.LANNet)
+	if err := s.apply(plan); err != nil {
+		s.detail = err.Error()
+	}
 }
 
 func parseForwarded(text, lanNet string) []Flow {

@@ -235,9 +235,9 @@
   }
 
   .route-ano {
-    flex: 1.35 1 16rem;
-    min-width: 15rem;
-    max-width: 18.5rem;
+    flex: 2 1 22rem;
+    min-width: 16rem;
+    max-width: 34rem;
   }
 }
 

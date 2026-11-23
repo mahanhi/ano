@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Box, Cctv, DoorOpen, Laptop, Lightbulb, Printer, Smartphone, Speaker, Thermometer, Tv } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -57,13 +58,6 @@ function colorOf(card: RouteCard) {
   return "#FF9830";
 }
 
-function outcomeOf(card: RouteCard) {
-  if (card.metrics.dropped) return "Stops at Ano";
-  if (card.status === "approved" && card.action === "allow_envoy") return "Through Envoy";
-  if (card.status === "approved") return "Straight out";
-  return "Still leaving";
-}
-
 export function RouteMap({
   cards,
   onOpen,
@@ -80,6 +74,7 @@ export function RouteMap({
   const inbound = uniqueColors([...dropped, ...direct, ...envoy]);
   const outbound = uniqueColors([...direct, ...envoy]);
   const directColor = direct.some((card) => card.status !== "approved") ? "#FF9830" : "#73BF69";
+  const [list, setList] = useState<{ title: string; cards: RouteCard[] } | null>(null);
 
   return (
     <div className="space-y-3">
@@ -96,9 +91,9 @@ export function RouteMap({
           <Flow colors={inbound} />
           <div className="route-ano min-w-0 rounded-xl border border-primary/30 bg-card px-3 py-2.5">
             <p className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Ano</p>
-            <Lane title="Drop" detail={namesOn(dropped, "None")} color="#F2495C" stop={dropped.length > 0} />
-            <Lane title="Out" detail={namesOn(direct, "None")} color={direct.length ? directColor : "#5c6770"} />
-            <Lane title="Envoy" detail={namesOn(envoy, "None")} color={envoy.length ? "#5794F2" : "#5c6770"} />
+            <Lane title="Drop" cards={dropped} color="#F2495C" stop={dropped.length > 0} onMore={() => setList({ title: "Drop", cards: dropped })} />
+            <Lane title="Out" cards={direct} color={direct.length ? directColor : "#5c6770"} onMore={() => setList({ title: "Out", cards: direct })} />
+            <Lane title="Envoy" cards={envoy} color={envoy.length ? "#5794F2" : "#5c6770"} onMore={() => setList({ title: "Envoy", cards: envoy })} />
           </div>
           <Flow colors={outbound} />
           <Pill title="Router" detail="Home" />
@@ -113,29 +108,14 @@ export function RouteMap({
             : `Dots leave ${sourceSummary(sources)}, cross Wi-Fi, and reach Ano. A refused name stops there.`}
         </p>
       </div>
-      {compact ? null : (
-        <ul className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-          {cards.map((card) => (
-            <li key={card.id}>
-              <button
-                type="button"
-                onClick={() => onOpen(card.id)}
-                className="flex w-full items-center gap-2 rounded-lg border bg-card px-2.5 py-2 text-left shadow-[0_1px_2px_rgba(16,24,40,0.04)] hover:border-primary hover:bg-accent/50"
-              >
-                <span className="size-1.5 shrink-0 rounded-full" style={{ background: colorOf(card) }} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium">{labelOf(card)}</span>
-                  <span className="block truncate font-mono text-[11px] text-muted-foreground">{leavingOf(card)}</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">
-                    {card.deviceName} · {identityOf(card.kind, card.addr, card.mac)} · {outcomeOf(card)}
-                  </span>
-                </span>
-                <span className="shrink-0 text-[12px] font-medium text-primary">Open</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      {list ? (
+        <NameDialog
+          title={list.title}
+          cards={list.cards}
+          onOpen={onOpen}
+          onClose={() => setList(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -144,9 +124,13 @@ function uniqueColors(cards: RouteCard[]) {
   return [...new Set(cards.map(colorOf))].slice(0, 3);
 }
 
-function namesOn(cards: RouteCard[], empty: string) {
-  if (cards.length === 0) return empty;
-  return cards.map(labelOf).join(", ");
+function uniqueNames(cards: RouteCard[]) {
+  const seen = new Map<string, RouteCard>();
+  for (const card of cards) {
+    const key = `${labelOf(card)}\n${card.destination}`;
+    if (!seen.has(key)) seen.set(key, card);
+  }
+  return [...seen.values()];
 }
 
 function sourcesOf(cards: RouteCard[]) {
@@ -236,15 +220,75 @@ function Pill({ title, detail, accent = "#8b95a3" }: { title: string; detail?: s
   );
 }
 
-function Lane({ title, detail, color, stop = false }: { title: string; detail: string; color: string; stop?: boolean }) {
+function Lane({ title, cards, color, stop = false, onMore }: { title: string; cards: RouteCard[]; color: string; stop?: boolean; onMore: () => void }) {
+  const names = uniqueNames(cards);
+  const shown = names.slice(0, 2).map(labelOf);
+  const extra = names.length - shown.length;
   return (
-    <div className="mt-1.5 flex items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5">
+    <div className="mt-1.5 flex min-w-0 items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5">
       <span className="size-2 shrink-0 rounded-full" style={{ background: color }} />
       <span className="w-12 shrink-0 text-[13px] font-medium" style={{ color }}>
         {title}
       </span>
-      <span className="min-w-0 flex-1 text-[13px] leading-4 text-foreground/80">{detail}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] leading-4 text-foreground/80">{shown.length === 0 ? "None" : shown.join(", ")}</span>
+      {extra > 0 ? (
+        <button type="button" onClick={onMore} className="shrink-0 text-[13px] font-medium text-primary hover:underline">
+          more
+        </button>
+      ) : null}
       {stop ? <span className="text-sm leading-none font-medium text-[#F2495C]">×</span> : null}
+    </div>
+  );
+}
+
+function NameDialog({ title, cards, onOpen, onClose }: { title: string; cards: RouteCard[]; onOpen: (id: string) => void; onClose: () => void }) {
+  const names = uniqueNames(cards);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="presentation" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="flex max-h-[70vh] w-full max-w-md flex-col overflow-hidden rounded-xl border bg-card shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+          <p className="text-sm font-medium">
+            {title}
+            <span className="ml-2 text-[12px] font-normal text-muted-foreground">{names.length} names</span>
+          </p>
+          <button type="button" onClick={onClose} className="text-[13px] font-medium text-primary hover:underline">
+            Close
+          </button>
+        </div>
+        <ul className="min-h-0 flex-1 overflow-y-auto">
+          {names.map((card) => (
+            <li key={card.id} className="border-b last:border-b-0">
+              <button
+                type="button"
+                onClick={() => {
+                  onOpen(card.id);
+                  onClose();
+                }}
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left hover:bg-accent/50"
+              >
+                <span className="size-1.5 shrink-0 rounded-full" style={{ background: colorOf(card) }} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium">{labelOf(card)}</span>
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground">{leavingOf(card)}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

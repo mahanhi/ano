@@ -98,6 +98,18 @@ func TestSharedMACKeepsEachAddress(t *testing.T) {
 	}
 }
 
+func TestNeighAndLeasesNameTheSameDevice(t *testing.T) {
+	neigh := ParseNeigh("192.168.11.133 dev enp49s0 lladdr aa:bb:cc:dd:ee:01 REACHABLE\n192.168.11.150 dev enp49s0 INCOMPLETE\n192.168.11.151 dev enp49s0 lladdr aa:bb:cc:dd:ee:02 FAILED\n")
+	if len(neigh) != 1 || neigh[0].Addr != "192.168.11.133" || neigh[0].MAC != "aa:bb:cc:dd:ee:01" {
+		t.Fatalf("%+v", neigh)
+	}
+	leases := ParseLeases("1700000000 aa:bb:cc:dd:ee:01 192.168.11.133 MacBook-Pro *\n1700000000 aa:bb:cc:dd:ee:03 192.168.11.140 * *\n")
+	got := mergeLeaseNames(neigh, leases)
+	if len(got) != 2 || got[0].Name != "MacBook-Pro" || got[1].Addr != "192.168.11.140" || got[1].Name != "" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestDefaultRouteNamesTheHomePort(t *testing.T) {
 	if ifaceFromDefaultRoute("default via 10.0.0.1 dev enp97s0 proto dhcp src 10.0.0.6 metric 100\n") != "enp97s0" {
 		t.Fatal("linux route")

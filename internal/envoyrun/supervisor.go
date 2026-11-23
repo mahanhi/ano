@@ -54,6 +54,17 @@ func (s *Supervisor) reload() error {
 	if err != nil {
 		return err
 	}
+	if on, err := s.store.DropsEnabled(); err != nil {
+		return err
+	} else if !on {
+		kept := make([]store.EnvoyRoute, 0, len(routes))
+		for _, route := range routes {
+			if route.Action != "drop" {
+				kept = append(kept, route)
+			}
+		}
+		routes = kept
+	}
 	cfgRoutes := make([]envoycfg.Route, 0, len(routes))
 	for _, r := range routes {
 		cfgRoutes = append(cfgRoutes, envoycfg.Route{Destination: r.Destination, Action: r.Action, Reroute: r.Reroute})
